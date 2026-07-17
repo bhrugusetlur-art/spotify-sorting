@@ -31,6 +31,8 @@
 - `src/lib/security/crypto.ts` — AES-GCM sealing for tokens and OAuth cookies.
 - `src/lib/auth/pkce.ts` — PKCE and OAuth state generation.
 - `src/lib/auth/session.ts` — signed application session tokens and cookie settings.
+- `src/lib/auth/oauth-cookie.ts` — OAuth transaction cookie name, options, and payload type.
+- `src/lib/auth/callback-handler.ts` — injectable Spotify callback handler factory.
 - `src/lib/auth/repository.ts` — linked-account persistence interface and Drizzle implementation.
 - `src/lib/spotify/oauth.ts` — Spotify authorization URL, code exchange, refresh, and profile fetch.
 - `src/components/*` — accessible landing and dashboard presentation.
@@ -179,7 +181,13 @@ export default defineConfig({
     "@": fileURLToPath(new URL("./src", import.meta.url)),
     "server-only": fileURLToPath(new URL("./src/test/server-only.ts", import.meta.url)),
   } },
-  test: { environment: "jsdom", setupFiles: ["./src/test/setup.ts"] },
+  test: {
+    environment: "jsdom",
+    setupFiles: ["./src/test/setup.ts"],
+    // Scope to src so Vitest does not collect the Playwright specs under tests/,
+    // which its default `**/*.spec.ts` glob would otherwise match and fail on.
+    include: ["src/**/*.test.{ts,tsx}"],
+  },
 });
 ```
 
@@ -367,8 +375,20 @@ describe("parseEnv", () => {
     expect(() => parseEnv({ ...valid, SPOTIFY_REDIRECT_URI: "http://example.com/callback" })).toThrow();
   });
 
+  it("rejects hosts that merely start with the loopback address", () => {
+    expect(() => parseEnv({ ...valid, SPOTIFY_REDIRECT_URI: "http://127.0.0.1.evil.example/callback" })).toThrow();
+  });
+
   it("rejects encryption keys that are not 32 bytes", () => {
     expect(() => parseEnv({ ...valid, TOKEN_ENCRYPTION_KEY: Buffer.alloc(16).toString("base64") })).toThrow();
+  });
+
+  it("rejects encryption keys that are not canonical base64", () => {
+    expect(() => parseEnv({ ...valid, TOKEN_ENCRYPTION_KEY: `${Buffer.alloc(32, 7).toString("base64")}!!` })).toThrow();
+  });
+
+  it("rejects database URLs that are not PostgreSQL", () => {
+    expect(() => parseEnv({ ...valid, DATABASE_URL: "mysql://user:pass@db.example.com/app" })).toThrow();
   });
 });
 ```
@@ -386,14 +406,30 @@ Expected: FAIL because `./env` does not exist.
 import "server-only";
 import { z } from "zod";
 
+// Buffer.from(…, "base64") silently ignores trailing garbage, so require a
+// canonical round-trip rather than trusting the decoded length alone.
 const encryptionKey = z.string().refine((value) => {
-  try { return Buffer.from(value, "base64").length === 32; } catch { return false; }
-}, "TOKEN_ENCRYPTION_KEY must be a base64-encoded 32-byte key");
+  const decoded = Buffer.from(value, "base64");
+  return decoded.length === 32 && decoded.toString("base64") === value;
+}, "TOKEN_ENCRYPTION_KEY must be a canonical base64-encoded 32-byte key");
+
+const databaseUrl = z.string().refine((value) => {
+  try { return ["postgresql:", "postgres:"].includes(new URL(value).protocol); } catch { return false; }
+}, "DATABASE_URL must be a PostgreSQL connection string");
+
+// Compare the parsed hostname exactly: a startsWith check would accept
+// hosts such as http://127.0.0.1.evil.example.
+const redirectUri = z.string().refine((value) => {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || (url.protocol === "http:" && url.hostname === "127.0.0.1");
+  } catch { return false; }
+}, "Use HTTPS, or 127.0.0.1 for local redirects");
 
 const schema = z.object({
-  DATABASE_URL: z.string().url(),
+  DATABASE_URL: databaseUrl,
   SPOTIFY_CLIENT_ID: z.string().min(1),
-  SPOTIFY_REDIRECT_URI: z.string().url().refine((value) => value.startsWith("https://") || value.startsWith("http://127.0.0.1"), "Use HTTPS, or 127.0.0.1 for local redirects"),
+  SPOTIFY_REDIRECT_URI: redirectUri,
   SESSION_SECRET: z.string().min(32),
   TOKEN_ENCRYPTION_KEY: encryptionKey,
 });
@@ -520,7 +556,7 @@ Expected: a SQL migration containing both enums and all five tables.
 
 Run: `pnpm test src/lib/config/env.test.ts && pnpm typecheck && git diff --check`
 
-Expected: four passing tests, zero type errors, clean diff.
+Expected: seven passing tests, zero type errors, clean diff.
 
 ```bash
 git add .env.example drizzle.config.ts drizzle src/lib/config src/lib/db
@@ -560,8 +596,11 @@ describe("sealed values", () => {
   });
 
   it("rejects tampering", () => {
-    const token = seal({ value: 1 }, key);
-    expect(() => unseal(`${token.slice(0, -1)}x`, key)).toThrow();
+    // Flip a ciphertext bit rather than editing the base64url text: replacing the
+    // final character can decode to identical bytes and silently pass.
+    const bytes = Buffer.from(seal({ value: 1 }, key), "base64url");
+    bytes[bytes.length - 1] ^= 0xff;
+    expect(() => unseal(bytes.toString("base64url"), key)).toThrow();
   });
 });
 ```
@@ -569,13 +608,22 @@ describe("sealed values", () => {
 ```ts
 // src/lib/auth/pkce.test.ts
 import { describe, expect, it } from "vitest";
-import { createOAuthState, createPkce } from "./pkce";
+import { createOAuthState, createPkce, deriveChallenge } from "./pkce";
 
 describe("Spotify OAuth primitives", () => {
-  it("creates an S256 PKCE pair", () => {
+  // Known-answer vector from RFC 7636 Appendix B. This pins S256 + base64url
+  // against a published constant, so an implementation that returned the plain
+  // verifier or used hex/standard base64 would fail here.
+  it("derives the RFC 7636 Appendix B challenge", () => {
+    expect(deriveChallenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")).toBe("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+  });
+
+  it("creates a PKCE pair within the RFC 7636 length bounds", () => {
     const pair = createPkce();
     expect(pair.verifier.length).toBeGreaterThanOrEqual(43);
+    expect(pair.verifier.length).toBeLessThanOrEqual(128);
     expect(pair.challenge).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(pair.challenge).not.toBe(pair.verifier);
   });
 
   it("creates unique state values", () => {
@@ -622,10 +670,13 @@ import { createHash, randomBytes } from "node:crypto";
 
 export function createOAuthState(): string { return randomBytes(24).toString("base64url"); }
 
+export function deriveChallenge(verifier: string): string {
+  return createHash("sha256").update(verifier).digest("base64url");
+}
+
 export function createPkce(): { verifier: string; challenge: string } {
   const verifier = randomBytes(48).toString("base64url");
-  const challenge = createHash("sha256").update(verifier).digest("base64url");
-  return { verifier, challenge };
+  return { verifier, challenge: deriveChallenge(verifier) };
 }
 ```
 
@@ -646,8 +697,26 @@ describe("application sessions", () => {
     const token = createSessionToken({ userId: "user-123", expiresAt: 2_000 }, "x".repeat(32));
     expect(readSessionToken(token, "x".repeat(32), 2_001)).toBeNull();
   });
+
+  it("rejects a valid payload carrying a forged signature", () => {
+    const [encoded] = createSessionToken({ userId: "user-123", expiresAt: 2_000 }, "x".repeat(32)).split(".");
+    expect(readSessionToken(`${encoded}.${"a".repeat(43)}`, "x".repeat(32), 1_000)).toBeNull();
+  });
+
+  it("rejects a token signed with a different secret", () => {
+    const token = createSessionToken({ userId: "user-123", expiresAt: 2_000 }, "y".repeat(32));
+    expect(readSessionToken(token, "x".repeat(32), 1_000)).toBeNull();
+  });
+
+  it("returns null rather than throwing on a multibyte signature", () => {
+    // 43 CJK characters: same UTF-16 length as a real signature, 3x the bytes.
+    const [encoded] = createSessionToken({ userId: "user-123", expiresAt: 2_000 }, "x".repeat(32)).split(".");
+    expect(readSessionToken(`${encoded}.${"日".repeat(43)}`, "x".repeat(32), 1_000)).toBeNull();
+  });
 });
 ```
+
+The `JSON.parse` guard in the implementation below is deliberately untested: the signature check runs first, so unparseable payloads are unreachable without the signing secret. It stays as defense-in-depth, not as a behavior with a test.
 
 - [ ] **Step 5: Run session test and verify RED**
 
@@ -674,13 +743,26 @@ export function createSessionToken(payload: SessionPayload, secret: string): str
   return `${encoded}.${sign(encoded, secret)}`;
 }
 
+// Reject anything that is not base64url before decoding: Buffer.from is lenient,
+// and comparing string lengths of multibyte input against byte buffers makes
+// timingSafeEqual throw a RangeError instead of returning null.
+function decodeBase64Url(value: string): Buffer | null {
+  return /^[A-Za-z0-9_-]+$/.test(value) ? Buffer.from(value, "base64url") : null;
+}
+
 export function readSessionToken(token: string, secret: string, now = Date.now()): SessionPayload | null {
   const [encoded, signature] = token.split(".");
   if (!encoded || !signature) return null;
-  const expected = sign(encoded, secret);
-  if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
-  const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as SessionPayload;
-  return payload.expiresAt > now ? payload : null;
+  const provided = decodeBase64Url(signature);
+  if (!provided) return null;
+  const expected = Buffer.from(sign(encoded, secret), "base64url");
+  if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as SessionPayload;
+    return payload.expiresAt > now ? payload : null;
+  } catch {
+    return null;
+  }
 }
 
 export const sessionCookieOptions = {
@@ -694,7 +776,7 @@ export const sessionCookieOptions = {
 
 Run: `pnpm test src/lib/security/crypto.test.ts src/lib/auth/pkce.test.ts src/lib/auth/session.test.ts && pnpm typecheck`
 
-Expected: six passing tests and zero type errors.
+Expected: ten passing tests and zero type errors.
 
 ```bash
 git add src/lib/security src/lib/auth
@@ -738,8 +820,12 @@ describe("SpotifyOAuthClient", () => {
       access_token: "access", refresh_token: "refresh", expires_in: 3600, scope: "user-library-read", token_type: "Bearer",
     }), { status: 200, headers: { "content-type": "application/json" } }));
     const client = new SpotifyOAuthClient({ clientId: "client", redirectUri: "http://127.0.0.1/callback", fetch: fetcher });
-    await expect(client.exchangeCode("code", "verifier")).resolves.toMatchObject({ accessToken: "access" });
+    await expect(client.exchangeCode("code", "verifier")).resolves.toMatchObject({ accessToken: "access", refreshToken: "refresh" });
     expect(fetcher).toHaveBeenCalledOnce();
+    const body = fetcher.mock.calls[0]?.[1]?.body as URLSearchParams;
+    expect(body.get("grant_type")).toBe("authorization_code");
+    expect(body.get("code")).toBe("code");
+    expect(body.get("code_verifier")).toBe("verifier");
   });
 
   it("refreshes an expired token with the refresh-token grant", async () => {
@@ -912,10 +998,12 @@ git commit -m "feat: add spotify account integration"
 - Create: `src/lib/auth/oauth-flow.ts`
 - Test: `src/lib/auth/token-service.test.ts`
 - Create: `src/lib/auth/token-service.ts`
+- Create: `src/lib/auth/oauth-cookie.ts`
+- Create: `src/lib/auth/callback-handler.ts`
+- Test: `src/lib/auth/callback-handler.test.ts`
 - Create: `src/app/api/auth/spotify/start/route.ts`
 - Test: `src/app/api/auth/spotify/start/route.test.ts`
 - Create: `src/app/api/auth/spotify/callback/route.ts`
-- Test: `src/app/api/auth/spotify/callback/route.test.ts`
 - Create: `src/app/api/auth/logout/route.ts`
 - Test: `src/app/api/auth/logout/route.test.ts`
 - Create: `src/lib/auth/current-user.ts`
@@ -925,7 +1013,9 @@ git commit -m "feat: add spotify account integration"
 
 **Interfaces:**
 - Consumes: OAuth primitives, encrypted cookie payloads, Spotify client, repository, and signed sessions.
-- Produces: `completeSpotifyLogin`, `getValidSpotifyAccessToken`, OAuth Route Handlers, `getCurrentAccount`, and `GET /api/account`.
+- Produces: `completeSpotifyLogin`, `getValidSpotifyAccessToken`, `OAUTH_COOKIE`, `createCallbackHandler`, OAuth Route Handlers, `getCurrentAccount`, and `GET /api/account`.
+
+**Constraint — Route Handler exports:** Next.js validates `route.ts` exports at build time and permits only the HTTP method handlers plus the segment config options (`dynamic`, `revalidate`, `runtime`, and similar). Exporting a constant, factory, or type from a `route.ts` fails `next build`. Every shared symbol therefore lives in `src/lib/auth/*`, and route files export handlers only.
 
 - [ ] **Step 1: Write a failing OAuth completion service test**
 
@@ -991,20 +1081,43 @@ export async function completeSpotifyLogin(input: { code: string; verifier: stri
 
 ```ts
 // src/lib/auth/token-service.test.ts
-import { describe, expect, it } from "vitest";
-import { seal } from "@/lib/security/crypto";
+import { describe, expect, it, vi } from "vitest";
+import { seal, unseal } from "@/lib/security/crypto";
 import { createMemoryAccountRepository } from "./repository";
 import { getValidSpotifyAccessToken } from "./token-service";
 
 const key = Buffer.alloc(32, 4).toString("base64");
 
 describe("getValidSpotifyAccessToken", () => {
-  it("refreshes an expired access token and persists the replacement", async () => {
+  it("refreshes an expired access token and persists the encrypted replacement", async () => {
     const repository = createMemoryAccountRepository();
     const account = await repository.upsert({ spotifyUserId: "spotify-1", displayName: "Ada", imageUrl: null, encryptedAccessToken: seal("old", key), encryptedRefreshToken: seal("refresh", key), scopes: "user-library-read", accessTokenExpiresAt: new Date(1_000) });
     const accessToken = await getValidSpotifyAccessToken({ userId: account.userId, repository, encryptionKey: key, now: new Date(5_000), spotify: { refreshToken: async () => ({ accessToken: "new", expiresIn: 3600, scope: "user-library-read" }) } });
     expect(accessToken).toBe("new");
-    await expect(repository.findByUserId(account.userId)).resolves.toMatchObject({ scopes: "user-library-read" });
+    const stored = await repository.findByUserId(account.userId);
+    expect(unseal<string>(stored!.encryptedAccessToken, key)).toBe("new");
+    expect(stored!.encryptedAccessToken).not.toContain("new");
+    expect(stored!.accessTokenExpiresAt).toEqual(new Date(5_000 + 3_600_000));
+  });
+
+  it("keeps the existing refresh token when Spotify omits a replacement", async () => {
+    const repository = createMemoryAccountRepository();
+    const account = await repository.upsert({ spotifyUserId: "spotify-1", displayName: "Ada", imageUrl: null, encryptedAccessToken: seal("old", key), encryptedRefreshToken: seal("refresh", key), scopes: "user-library-read", accessTokenExpiresAt: new Date(1_000) });
+    await getValidSpotifyAccessToken({ userId: account.userId, repository, encryptionKey: key, now: new Date(5_000), spotify: { refreshToken: async () => ({ accessToken: "new", expiresIn: 3600, scope: "user-library-read" }) } });
+    const stored = await repository.findByUserId(account.userId);
+    expect(unseal<string>(stored!.encryptedRefreshToken, key)).toBe("refresh");
+  });
+
+  it("returns the cached token without calling Spotify when it is still valid", async () => {
+    const repository = createMemoryAccountRepository();
+    const account = await repository.upsert({ spotifyUserId: "spotify-1", displayName: "Ada", imageUrl: null, encryptedAccessToken: seal("current", key), encryptedRefreshToken: seal("refresh", key), scopes: "user-library-read", accessTokenExpiresAt: new Date(600_000) });
+    const refreshToken = vi.fn();
+    await expect(getValidSpotifyAccessToken({ userId: account.userId, repository, encryptionKey: key, now: new Date(5_000), spotify: { refreshToken } })).resolves.toBe("current");
+    expect(refreshToken).not.toHaveBeenCalled();
+  });
+
+  it("raises the safe AUTH_REQUIRED code for an unknown user", async () => {
+    await expect(getValidSpotifyAccessToken({ userId: "missing", repository: createMemoryAccountRepository(), encryptionKey: key, spotify: { refreshToken: vi.fn() } })).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
   });
 });
 ```
@@ -1021,6 +1134,7 @@ Expected: FAIL because `./token-service` does not exist.
 // src/lib/auth/token-service.ts
 import "server-only";
 import { seal, unseal } from "@/lib/security/crypto";
+import { AppError } from "@/lib/errors";
 import type { LinkedAccountRepository } from "./repository";
 import type { SpotifyTokenResponse } from "@/lib/spotify/oauth";
 
@@ -1033,7 +1147,7 @@ export async function getValidSpotifyAccessToken(input: {
 }): Promise<string> {
   const now = input.now ?? new Date();
   const account = await input.repository.findByUserId(input.userId);
-  if (!account) throw new Error("AUTH_REQUIRED");
+  if (!account) throw new AppError("AUTH_REQUIRED");
   if (account.accessTokenExpiresAt.getTime() > now.getTime() + 60_000) return unseal<string>(account.encryptedAccessToken, input.encryptionKey);
   const oldRefreshToken = unseal<string>(account.encryptedRefreshToken, input.encryptionKey);
   const tokens = await input.spotify.refreshToken(oldRefreshToken);
@@ -1071,6 +1185,7 @@ describe("resolveCurrentAccount", () => {
 ```ts
 // src/app/api/auth/spotify/start/route.test.ts
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { OAUTH_COOKIE } from "@/lib/auth/oauth-cookie";
 
 const startCookies = { set: vi.fn() };
 vi.mock("next/headers", () => ({ cookies: async () => startCookies }));
@@ -1088,22 +1203,31 @@ describe("Spotify authorization start", () => {
   });
 
   it("sets an encrypted OAuth cookie and redirects to Spotify", async () => {
-    const { GET, OAUTH_COOKIE } = await import("./route");
+    const { GET } = await import("./route");
     const response = await GET();
-    expect(new URL(response.headers.get("location")!).hostname).toBe("accounts.spotify.com");
+    const location = new URL(response.headers.get("location")!);
+    expect(location.hostname).toBe("accounts.spotify.com");
     expect(startCookies.set).toHaveBeenCalledWith(OAUTH_COOKIE, expect.any(String), expect.objectContaining({ httpOnly: true, maxAge: 300 }));
+    // The sealed cookie must not leak the verifier that the challenge commits to.
+    const sealed = startCookies.set.mock.calls[0]?.[1] as string;
+    expect(sealed).not.toContain(location.searchParams.get("code_challenge"));
   });
 });
 ```
 
 ```ts
-// src/app/api/auth/spotify/callback/route.test.ts
+// src/lib/auth/callback-handler.test.ts
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { seal } from "@/lib/security/crypto";
+import { OAUTH_COOKIE } from "./oauth-cookie";
 
 const cookieStore = { get: vi.fn(), set: vi.fn(), delete: vi.fn() };
 vi.mock("next/headers", () => ({ cookies: async () => cookieStore }));
 
-describe("Spotify callback", () => {
+const encryptionKey = Buffer.alloc(32, 6).toString("base64");
+const spotify = () => ({ exchangeCode: vi.fn(), profile: vi.fn() });
+
+describe("Spotify callback handler", () => {
   beforeEach(() => {
     cookieStore.get.mockReset(); cookieStore.set.mockReset(); cookieStore.delete.mockReset();
     Object.assign(process.env, {
@@ -1111,16 +1235,50 @@ describe("Spotify callback", () => {
       SPOTIFY_CLIENT_ID: "client",
       SPOTIFY_REDIRECT_URI: "http://127.0.0.1:3000/api/auth/spotify/callback",
       SESSION_SECRET: "s".repeat(32),
-      TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 6).toString("base64"),
+      TOKEN_ENCRYPTION_KEY: encryptionKey,
     });
   });
 
   it("redirects invalid callback state without calling Spotify", async () => {
     cookieStore.get.mockReturnValue(undefined);
-    const { createCallbackHandler } = await import("./route");
-    const handler = createCallbackHandler({ repository: { upsert: vi.fn(), findByUserId: vi.fn() }, spotify: { exchangeCode: vi.fn(), profile: vi.fn() }, now: () => new Date(1_000) });
+    const { createCallbackHandler } = await import("./callback-handler");
+    const ports = spotify();
+    const handler = createCallbackHandler({ repository: { upsert: vi.fn(), findByUserId: vi.fn() }, spotify: ports, now: () => new Date(1_000) });
     const response = await handler(new Request("http://127.0.0.1:3000/api/auth/spotify/callback?code=x&state=y"));
     expect(response.headers.get("location")).toBe("http://127.0.0.1:3000/?error=AUTH_STATE_INVALID");
+    expect(ports.exchangeCode).not.toHaveBeenCalled();
+    expect(ports.profile).not.toHaveBeenCalled();
+  });
+
+  it("reports a denied consent screen once the state proves the request is ours", async () => {
+    cookieStore.get.mockReturnValue({ value: seal({ state: "state-1", verifier: "verifier", expiresAt: 9_000 }, encryptionKey) });
+    const { createCallbackHandler } = await import("./callback-handler");
+    const ports = spotify();
+    const handler = createCallbackHandler({ repository: { upsert: vi.fn(), findByUserId: vi.fn() }, spotify: ports, now: () => new Date(1_000) });
+    const response = await handler(new Request("http://127.0.0.1:3000/api/auth/spotify/callback?error=access_denied&state=state-1"));
+    expect(response.headers.get("location")).toBe("http://127.0.0.1:3000/?error=SPOTIFY_PERMISSION_DENIED");
+    expect(cookieStore.delete).toHaveBeenCalledWith(OAUTH_COOKIE);
+    expect(ports.exchangeCode).not.toHaveBeenCalled();
+  });
+
+  it("keeps the pending login intact when a forged error carries the wrong state", async () => {
+    cookieStore.get.mockReturnValue({ value: seal({ state: "state-1", verifier: "verifier", expiresAt: 9_000 }, encryptionKey) });
+    const { createCallbackHandler } = await import("./callback-handler");
+    const handler = createCallbackHandler({ repository: { upsert: vi.fn(), findByUserId: vi.fn() }, spotify: spotify(), now: () => new Date(1_000) });
+    const response = await handler(new Request("http://127.0.0.1:3000/api/auth/spotify/callback?error=access_denied&state=attacker"));
+    expect(response.headers.get("location")).toBe("http://127.0.0.1:3000/?error=AUTH_STATE_INVALID");
+    // Deleting here would let any site cancel a login that is still in flight.
+    expect(cookieStore.delete).not.toHaveBeenCalled();
+  });
+
+  it("rejects an expired OAuth transaction", async () => {
+    cookieStore.get.mockReturnValue({ value: seal({ state: "state-1", verifier: "verifier", expiresAt: 500 }, encryptionKey) });
+    const { createCallbackHandler } = await import("./callback-handler");
+    const ports = spotify();
+    const handler = createCallbackHandler({ repository: { upsert: vi.fn(), findByUserId: vi.fn() }, spotify: ports, now: () => new Date(1_000) });
+    const response = await handler(new Request("http://127.0.0.1:3000/api/auth/spotify/callback?code=x&state=state-1"));
+    expect(response.headers.get("location")).toBe("http://127.0.0.1:3000/?error=AUTH_STATE_INVALID");
+    expect(ports.exchangeCode).not.toHaveBeenCalled();
   });
 });
 ```
@@ -1158,51 +1316,67 @@ describe("GET /api/account", () => {
 });
 ```
 
-Run: `pnpm test src/lib/auth/current-user.test.ts src/app/api/auth/spotify/start/route.test.ts src/app/api/auth/spotify/callback/route.test.ts src/app/api/auth/logout/route.test.ts src/app/api/account/route.test.ts`
+Run: `pnpm test src/lib/auth/current-user.test.ts src/lib/auth/callback-handler.test.ts src/app/api/auth/spotify/start/route.test.ts src/app/api/auth/logout/route.test.ts src/app/api/account/route.test.ts`
 
-Expected: FAIL because the route implementation files are missing.
+Expected: FAIL because the handler and route implementation files are missing.
 
 - [ ] **Step 8: Implement route composition and current-account lookup**
+
+```ts
+// src/lib/auth/oauth-cookie.ts
+import "server-only";
+
+export const OAUTH_COOKIE = "spotify_oauth";
+export const OAUTH_COOKIE_MAX_AGE = 300;
+export type OAuthCookie = { state: string; verifier: string; expiresAt: number };
+
+export const oauthCookieOptions = {
+  httpOnly: true,
+  sameSite: "lax" as const,
+  secure: process.env.NODE_ENV === "production",
+  path: "/",
+  maxAge: OAUTH_COOKIE_MAX_AGE,
+};
+```
 
 ```ts
 // src/app/api/auth/spotify/start/route.ts
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import { OAUTH_COOKIE, OAUTH_COOKIE_MAX_AGE, oauthCookieOptions } from "@/lib/auth/oauth-cookie";
 import { createOAuthState, createPkce } from "@/lib/auth/pkce";
 import { getEnv } from "@/lib/config/env";
 import { seal } from "@/lib/security/crypto";
 import { SpotifyOAuthClient } from "@/lib/spotify/oauth";
 
-export const OAUTH_COOKIE = "spotify_oauth";
-
 export async function GET() {
   const env = getEnv();
   const state = createOAuthState();
   const { verifier, challenge } = createPkce();
-  const expiresAt = Date.now() + 5 * 60 * 1_000;
+  const expiresAt = Date.now() + OAUTH_COOKIE_MAX_AGE * 1_000;
   const cookieStore = await cookies();
-  cookieStore.set(OAUTH_COOKIE, seal({ state, verifier, expiresAt }, env.TOKEN_ENCRYPTION_KEY), {
-    httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/", maxAge: 300,
-  });
+  cookieStore.set(OAUTH_COOKIE, seal({ state, verifier, expiresAt }, env.TOKEN_ENCRYPTION_KEY), oauthCookieOptions);
   const spotify = new SpotifyOAuthClient({ clientId: env.SPOTIFY_CLIENT_ID, redirectUri: env.SPOTIFY_REDIRECT_URI, fetch });
   return NextResponse.redirect(spotify.authorizationUrl({ state, challenge }));
 }
 ```
 
 ```ts
-// src/app/api/auth/spotify/callback/route.ts
+// src/lib/auth/callback-handler.ts
+import "server-only";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { completeSpotifyLogin } from "@/lib/auth/oauth-flow";
+import { OAUTH_COOKIE, type OAuthCookie } from "@/lib/auth/oauth-cookie";
 import { createDrizzleAccountRepository, type LinkedAccountRepository } from "@/lib/auth/repository";
 import { createSessionToken, SESSION_COOKIE, sessionCookieOptions } from "@/lib/auth/session";
 import { getEnv } from "@/lib/config/env";
 import { toErrorCode, type ErrorCode } from "@/lib/errors";
 import { unseal } from "@/lib/security/crypto";
 import { SpotifyOAuthClient } from "@/lib/spotify/oauth";
-import { OAUTH_COOKIE } from "../start/route";
 
-type OAuthCookie = { state: string; verifier: string; expiresAt: number };
+const SESSION_LIFETIME_MS = 604_800_000;
+
 export type CallbackDependencies = {
   repository: LinkedAccountRepository;
   spotify: Pick<SpotifyOAuthClient, "exchangeCode" | "profile">;
@@ -1219,26 +1393,45 @@ export function createCallbackHandler(dependencies?: CallbackDependencies) {
   return async function callback(request: Request): Promise<NextResponse> {
     const env = getEnv();
     const url = new URL(request.url);
-    if (url.searchParams.get("error") === "access_denied") return errorRedirect(request, "SPOTIFY_PERMISSION_DENIED");
-    const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
     const cookieStore = await cookies();
     const encoded = cookieStore.get(OAUTH_COOKIE)?.value;
-    if (!code || !state || !encoded) return errorRedirect(request);
+    if (!state || !encoded) return errorRedirect(request);
+
     let oauth: OAuthCookie;
     try { oauth = unseal<OAuthCookie>(encoded, env.TOKEN_ENCRYPTION_KEY); } catch { return errorRedirect(request); }
+
+    // Validate state before touching the cookie. Deleting on an unvalidated
+    // request would let any site cancel a login that is still in flight.
     const now = dependencies?.now() ?? new Date();
     if (oauth.state !== state || oauth.expiresAt <= now.getTime()) return errorRedirect(request);
+
+    // State proves this callback belongs to our login attempt: the transaction is now spent.
+    cookieStore.delete(OAUTH_COOKIE);
+
+    const denied = url.searchParams.get("error");
+    if (denied) return errorRedirect(request, denied === "access_denied" ? "SPOTIFY_PERMISSION_DENIED" : "SPOTIFY_UNAVAILABLE");
+
+    const code = url.searchParams.get("code");
+    if (!code) return errorRedirect(request);
+
     const spotify = dependencies?.spotify ?? new SpotifyOAuthClient({ clientId: env.SPOTIFY_CLIENT_ID, redirectUri: env.SPOTIFY_REDIRECT_URI, fetch });
     const repository = dependencies?.repository ?? createDrizzleAccountRepository();
     let account: Awaited<ReturnType<typeof completeSpotifyLogin>>;
     try { account = await completeSpotifyLogin({ code, verifier: oauth.verifier, encryptionKey: env.TOKEN_ENCRYPTION_KEY, repository, spotify, now }); }
     catch (error) { return errorRedirect(request, toErrorCode(error)); }
-    cookieStore.delete(OAUTH_COOKIE);
-    cookieStore.set(SESSION_COOKIE, createSessionToken({ userId: account.userId, expiresAt: now.getTime() + 604_800_000 }, env.SESSION_SECRET), sessionCookieOptions);
+
+    cookieStore.set(SESSION_COOKIE, createSessionToken({ userId: account.userId, expiresAt: now.getTime() + SESSION_LIFETIME_MS }, env.SESSION_SECRET), sessionCookieOptions);
     return NextResponse.redirect(new URL("/dashboard", request.url));
   };
 }
+```
+
+The route file exports the handler and nothing else:
+
+```ts
+// src/app/api/auth/spotify/callback/route.ts
+import { createCallbackHandler } from "@/lib/auth/callback-handler";
 
 export const GET = createCallbackHandler();
 ```
@@ -1290,9 +1483,9 @@ export async function GET(): Promise<Response> {
 
 Run:
 
-`pnpm test src/lib/auth src/app/api/auth src/app/api/account && pnpm typecheck && pnpm lint`
+`pnpm test src/lib/auth src/app/api/auth src/app/api/account && pnpm typecheck && pnpm lint && pnpm build`
 
-Expected: all auth tests pass with no token values in response bodies.
+Expected: all auth tests pass with no token values in response bodies. The build must be run here, not deferred: it is what proves the `route.ts` files export only handlers.
 
 ```bash
 git add src/lib/auth src/app/api/auth src/app/api/account
@@ -1454,6 +1647,8 @@ git commit -m "feat: add spotify foundation interface"
 **Files:**
 - Create: `playwright.config.ts`
 - Create: `tests/e2e/landing.spec.ts`
+- Create: `vitest.integration.config.ts`
+- Create: `tests/integration/repository.test.ts`
 - Create: `.github/workflows/ci.yml`
 - Create: `README.md`
 - Modify: `package.json`
@@ -1479,7 +1674,78 @@ test("health endpoint returns a stable payload", async ({ request }) => {
   expect(response.ok()).toBeTruthy();
   await expect(response.json()).resolves.toEqual({ status: "ok" });
 });
+
+// Exercises getCurrentAccount() -> getEnv() against a real server process, so a
+// missing or invalid environment surfaces here rather than in production.
+test("unauthenticated dashboard visits redirect to the landing page", async ({ page }) => {
+  await page.goto("/dashboard");
+  await expect(page).toHaveURL("http://127.0.0.1:3000/");
+  await expect(page.getByRole("heading", { name: /sort your liked songs by mood/i })).toBeVisible();
+});
 ```
+
+- [ ] **Step 1b: Cover the Drizzle adapter against a real PostgreSQL**
+
+The unit suite only exercises the in-memory fake, so the Drizzle adapter and the generated migration are otherwise never executed. This test runs against a real database in CI and locally when `DATABASE_URL` points at a throwaway database.
+
+```ts
+// vitest.integration.config.ts
+import { defineConfig } from "vitest/config";
+import { fileURLToPath } from "node:url";
+
+export default defineConfig({
+  resolve: { alias: {
+    "@": fileURLToPath(new URL("./src", import.meta.url)),
+    "server-only": fileURLToPath(new URL("./src/test/server-only.ts", import.meta.url)),
+  } },
+  test: { environment: "node", include: ["tests/integration/**/*.test.ts"] },
+});
+```
+
+```ts
+// tests/integration/repository.test.ts
+import { randomUUID } from "node:crypto";
+import { afterAll, describe, expect, it } from "vitest";
+import { getDb } from "@/lib/db/client";
+import { users } from "@/lib/db/schema";
+import { createDrizzleAccountRepository } from "@/lib/auth/repository";
+
+const spotifyUserId = `spotify-${randomUUID()}`;
+
+afterAll(async () => {
+  await getDb().delete(users);
+});
+
+describe("Drizzle linked-account repository", () => {
+  it("persists a linked account and reads it back through PostgreSQL", async () => {
+    const repository = createDrizzleAccountRepository();
+    const saved = await repository.upsert({ spotifyUserId, displayName: "Ada", imageUrl: null, encryptedAccessToken: "sealed-access", encryptedRefreshToken: "sealed-refresh", scopes: "user-library-read", accessTokenExpiresAt: new Date(10_000) });
+    await expect(repository.findByUserId(saved.userId)).resolves.toMatchObject({ spotifyUserId, displayName: "Ada", encryptedAccessToken: "sealed-access" });
+  });
+
+  it("reuses the same user row when the same Spotify account links again", async () => {
+    const repository = createDrizzleAccountRepository();
+    const first = await repository.upsert({ spotifyUserId, displayName: "Ada", imageUrl: null, encryptedAccessToken: "a1", encryptedRefreshToken: "r1", scopes: "user-library-read", accessTokenExpiresAt: new Date(10_000) });
+    const second = await repository.upsert({ spotifyUserId, displayName: "Ada Lovelace", imageUrl: null, encryptedAccessToken: "a2", encryptedRefreshToken: "r2", scopes: "user-library-read", accessTokenExpiresAt: new Date(20_000) });
+    expect(second.userId).toBe(first.userId);
+    await expect(repository.findByUserId(first.userId)).resolves.toMatchObject({ displayName: "Ada Lovelace", encryptedAccessToken: "a2" });
+  });
+
+  it("returns null for an unknown user", async () => {
+    await expect(createDrizzleAccountRepository().findByUserId(randomUUID())).resolves.toBeNull();
+  });
+});
+```
+
+Add the script to `package.json`:
+
+```json
+"test:integration": "vitest run --config vitest.integration.config.ts"
+```
+
+Run: `pnpm db:migrate && pnpm test:integration`
+
+Expected: three passing tests against the migrated database.
 
 - [ ] **Step 2: Configure Playwright and run the acceptance contract**
 
@@ -1503,6 +1769,8 @@ Expected: both acceptance tests pass. The landing-page behavior already complete
 
 - [ ] **Step 3: Add CI workflow**
 
+The `webServer` command inherits the job environment, and `/dashboard` calls `getEnv()`, which parses the whole schema. CI therefore needs all five variables, not only the database. These are throwaway CI values, not secrets.
+
 ```yaml
 # .github/workflows/ci.yml
 name: CI
@@ -1513,6 +1781,25 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mood_sorter_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/mood_sorter_test
+      SPOTIFY_CLIENT_ID: ci-spotify-client-id
+      SPOTIFY_REDIRECT_URI: http://127.0.0.1:3000/api/auth/spotify/callback
+      SESSION_SECRET: ci-session-secret-not-used-outside-continuous-integration
+      TOKEN_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -1521,9 +1808,11 @@ jobs:
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm db:migrate
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
+      - run: pnpm test:integration
       - run: pnpm test:e2e
       - run: pnpm build
 ```
@@ -1586,9 +1875,12 @@ Open `http://127.0.0.1:3000`.
 pnpm lint
 pnpm typecheck
 pnpm test
+pnpm test:integration
 pnpm test:e2e
 pnpm build
 ```
+
+`pnpm test:integration` runs against the database in `DATABASE_URL` and deletes rows from it. Point it at a throwaway database, never at real data.
 
 ## Security
 
@@ -1603,12 +1895,13 @@ Run:
 pnpm lint
 pnpm typecheck
 pnpm test
+pnpm test:integration
 pnpm test:e2e
 pnpm build
 git diff --check
 ```
 
-Expected: every command exits `0`; Vitest reports all unit/component tests passing; Playwright reports two passing Chromium tests; Next.js reports a successful production build.
+Expected: every command exits `0`; Vitest reports all unit/component tests passing; the integration suite reports three passing tests against PostgreSQL; Playwright reports three passing Chromium tests; Next.js reports a successful production build.
 
 ```bash
 git add .github playwright.config.ts tests README.md package.json pnpm-lock.yaml
@@ -1618,11 +1911,16 @@ git commit -m "chore: document and verify spotify foundation"
 ## Plan Completion Checklist
 
 - [ ] Landing page and health route work without database access.
-- [ ] Environment validation rejects insecure local redirect configuration and invalid encryption keys.
-- [ ] The committed migration contains all five tables and both enums from the design specification.
+- [ ] Environment validation rejects insecure local redirect configuration, host-prefix lookalikes, non-PostgreSQL URLs, and invalid encryption keys.
+- [ ] The committed migration contains all five tables and both enums from the design specification, and CI applies it to a real PostgreSQL service.
+- [ ] `route.ts` files export only HTTP handlers, and `pnpm build` passes.
 - [ ] OAuth secrets, access tokens, and refresh tokens stay server-side.
+- [ ] Session verification rejects forged signatures and wrong secrets, and returns `null` rather than throwing on malformed input.
+- [ ] The PKCE challenge matches the RFC 7636 Appendix B known-answer vector.
+- [ ] The OAuth callback validates state before consuming the transaction cookie, so a forged error cannot cancel a pending login.
 - [ ] Spotify login persists an encrypted linked account and sets a signed application session.
-- [ ] Unauthenticated dashboard access redirects to the landing page.
+- [ ] Unauthenticated dashboard access redirects to the landing page, verified in a real browser.
 - [ ] Authenticated users see their Spotify identity and five mood destinations.
-- [ ] Unit, component, browser, type, lint, migration, and build checks are repeatable locally and in CI.
+- [ ] The Drizzle adapter is exercised against PostgreSQL, not only the in-memory fake.
+- [ ] Unit, integration, component, browser, type, lint, migration, and build checks are repeatable locally and in CI.
 - [ ] README setup steps use `127.0.0.1` and contain no real credentials.

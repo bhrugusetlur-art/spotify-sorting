@@ -18,33 +18,46 @@ export async function establishMockCallbackSession(
 
   const sql = postgres(databaseUrl, { prepare: false });
   const spotifyUserId = `e2e-${randomUUID()}`;
-  const [user] = await sql<{ id: string }[]>`
-    insert into users (spotify_user_id, display_name)
-    values (${spotifyUserId}, ${input.displayName})
-    returning id
-  `;
-  if (!user) throw new Error("E2E user creation failed");
-  await sql`
-    insert into spotify_accounts
-      (user_id, encrypted_access_token, encrypted_refresh_token, scopes, access_token_expires_at)
-    values
-      (${user.id}, 'e2e-access', 'e2e-refresh', 'user-library-read', ${new Date(Date.now() + 3_600_000)})
-  `;
+  let userId: string | undefined;
 
-  await context.addCookies([
-    {
-      name: "mood_sorter_session",
-      value: sessionToken({ userId: user.id, expiresAt: Date.now() + 60_000 }, sessionSecret),
-      domain: "127.0.0.1",
-      path: "/",
-      httpOnly: true,
-      secure: false,
-      sameSite: "Lax",
-    },
-  ]);
-
-  return async () => {
-    await sql`delete from users where id = ${user.id}`;
-    await sql.end({ timeout: 5 });
+  const cleanup = async () => {
+    try {
+      if (userId) await sql`delete from users where id = ${userId}`;
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
   };
+
+  try {
+    const [user] = await sql<{ id: string }[]>`
+      insert into users (spotify_user_id, display_name)
+      values (${spotifyUserId}, ${input.displayName})
+      returning id
+    `;
+    if (!user) throw new Error("E2E user creation failed");
+    userId = user.id;
+    await sql`
+      insert into spotify_accounts
+        (user_id, encrypted_access_token, encrypted_refresh_token, scopes, access_token_expires_at)
+      values
+        (${userId}, 'e2e-access', 'e2e-refresh', 'user-library-read', ${new Date(Date.now() + 3_600_000)})
+    `;
+
+    await context.addCookies([
+      {
+        name: "mood_sorter_session",
+        value: sessionToken({ userId, expiresAt: Date.now() + 60_000 }, sessionSecret),
+        domain: "127.0.0.1",
+        path: "/",
+        httpOnly: true,
+        secure: false,
+        sameSite: "Lax",
+      },
+    ]);
+
+    return cleanup;
+  } catch (error) {
+    await cleanup().catch(() => undefined);
+    throw error;
+  }
 }

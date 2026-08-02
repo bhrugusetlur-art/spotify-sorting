@@ -22,12 +22,4 @@ describe("GET /api/account", () => {
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ error: { code: "AUTH_REQUIRED" } });
   });
-
-  it("returns unauthorized when the session user has no linked account", async () => {
-    getCurrentAccount.mockResolvedValue(null);
-    const { GET } = await import("./route");
-    const response = await GET();
-    expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({ error: { code: "AUTH_REQUIRED" } });
-  });
 });

@@ -20,6 +20,8 @@
 - Do not add Python, Redis, a background queue, machine-learning clustering, or a component library.
 - Start every behavior-bearing change with a failing test and observe the expected failure before implementation.
 - This plan delivers the foundation slice only. Saved-track classification and playlist synchronization belong to the next implementation plan.
+- The foundation `SpotifyOAuthClient` covers Spotify Accounts token operations and `GET /v1/me`. It maps OAuth/profile endpoint failures to the safe application vocabulary. Pagination, bounded `Retry-After` handling, and retryable-5xx behavior belong to the saved-track/playlist Spotify Web API client in the next sorting-pipeline plan.
+- PostgreSQL is not required for Tasks 1-3. A migrated throwaway PostgreSQL database becomes an execution prerequisite at Task 4 and remains required for integration and authenticated-browser verification.
 
 ## File Map
 
@@ -68,7 +70,7 @@
 
 - [ ] **Step 1: Create configuration-only scaffold files**
 
-Create `package.json` with these scripts and then install the named packages so pnpm writes exact versions and the lockfile:
+Create `package.json` with these scripts and then install the named packages so pnpm resolves versions and commits the exact dependency graph in `pnpm-lock.yaml`:
 
 ```json
 {
@@ -336,6 +338,7 @@ git commit -m "chore: scaffold next application"
 
 **Files:**
 - Create: `.env.example`
+- Modify: `.gitignore`
 - Test: `src/lib/config/env.test.ts`
 - Create: `src/lib/config/env.ts`
 - Create: `drizzle.config.ts`
@@ -451,6 +454,15 @@ SESSION_SECRET=replace-with-at-least-32-random-characters
 TOKEN_ENCRYPTION_KEY=replace-with-base64-encoded-32-byte-key
 ```
 
+Task 1 is already complete with narrower environment-file ignores. Before Task 2 finishes, replace the `.env` and `.env.local` entries in `.gitignore` with:
+
+```gitignore
+.env*
+!.env.example
+```
+
+This keeps every Next.js environment variant out of Git while preserving the non-secret example file.
+
 - [ ] **Step 4: Define the Drizzle schema and client**
 
 ```ts
@@ -559,7 +571,7 @@ Run: `pnpm test src/lib/config/env.test.ts && pnpm typecheck && git diff --check
 Expected: seven passing tests, zero type errors, clean diff.
 
 ```bash
-git add .env.example drizzle.config.ts drizzle src/lib/config src/lib/db
+git add .env.example .gitignore drizzle.config.ts drizzle src/lib/config src/lib/db
 git commit -m "feat: add validated database foundation"
 ```
 
@@ -788,14 +800,18 @@ git commit -m "feat: add secure oauth primitives"
 ### Task 4: Spotify OAuth Client and Account Repository
 
 **Files:**
+- Modify: `package.json`
+- Modify: `src/lib/db/client.ts`
 - Test: `src/lib/spotify/oauth.test.ts`
 - Create: `src/lib/spotify/oauth.ts`
 - Test: `src/lib/auth/repository.test.ts`
 - Create: `src/lib/auth/repository.ts`
+- Create: `vitest.integration.config.ts`
+- Test: `tests/integration/repository.test.ts`
 
 **Interfaces:**
 - Consumes: validated environment, encryption, Drizzle schema.
-- Produces: `SpotifyOAuthClient`, `SpotifyTokenResponse`, `SpotifyProfile`, `LinkedAccountRepository`, `createDrizzleAccountRepository`.
+- Produces: `SpotifyOAuthClient`, `SpotifyTokenResponse`, `SpotifyProfile`, `LinkedAccountRepository`, `createDrizzleAccountRepository`, `closeDb(): Promise<void>`, and the `test:integration` script.
 
 - [ ] **Step 1: Write failing Spotify OAuth client tests**
 
@@ -842,6 +858,15 @@ describe("SpotifyOAuthClient", () => {
     const client = new SpotifyOAuthClient({ clientId: "client", redirectUri: "http://127.0.0.1/callback", fetch: vi.fn().mockResolvedValue(new Response(null, { status: 429 })) });
     await expect(client.exchangeCode("code", "verifier")).rejects.toMatchObject({ code: "SPOTIFY_RATE_LIMITED" });
   });
+
+  it("maps malformed Spotify payloads to a safe application error", async () => {
+    const client = new SpotifyOAuthClient({
+      clientId: "client",
+      redirectUri: "http://127.0.0.1/callback",
+      fetch: vi.fn().mockResolvedValue(new Response("not-json", { status: 200 })),
+    });
+    await expect(client.exchangeCode("code", "verifier")).rejects.toMatchObject({ code: "SPOTIFY_UNAVAILABLE" });
+  });
 });
 ```
 
@@ -870,6 +895,18 @@ function spotifyFailure(response: Response): AppError {
   return new AppError(response.status === 429 ? "SPOTIFY_RATE_LIMITED" : "SPOTIFY_UNAVAILABLE");
 }
 
+// This foundation client covers OAuth token operations and GET /v1/me. The
+// saved-track/playlist client in the next plan owns bounded Retry-After and
+// retryable-5xx behavior.
+async function spotifyJson<T>(response: Response, schema: z.ZodType<T>): Promise<T> {
+  if (!response.ok) throw spotifyFailure(response);
+  try {
+    return schema.parse(await response.json());
+  } catch {
+    throw new AppError("SPOTIFY_UNAVAILABLE");
+  }
+}
+
 export class SpotifyOAuthClient {
   constructor(private readonly config: { clientId: string; redirectUri: string; fetch: typeof fetch }) {}
 
@@ -882,23 +919,20 @@ export class SpotifyOAuthClient {
   async exchangeCode(code: string, verifier: string): Promise<SpotifyTokenResponse> {
     const body = new URLSearchParams({ client_id: this.config.clientId, grant_type: "authorization_code", code, redirect_uri: this.config.redirectUri, code_verifier: verifier });
     const response = await this.config.fetch("https://accounts.spotify.com/api/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body });
-    if (!response.ok) throw spotifyFailure(response);
-    const value = tokenSchema.parse(await response.json());
+    const value = await spotifyJson(response, tokenSchema);
     return { accessToken: value.access_token, refreshToken: value.refresh_token, expiresIn: value.expires_in, scope: value.scope };
   }
 
   async refreshToken(refreshToken: string): Promise<SpotifyTokenResponse> {
     const body = new URLSearchParams({ client_id: this.config.clientId, grant_type: "refresh_token", refresh_token: refreshToken });
     const response = await this.config.fetch("https://accounts.spotify.com/api/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body });
-    if (!response.ok) throw spotifyFailure(response);
-    const value = tokenSchema.parse(await response.json());
+    const value = await spotifyJson(response, tokenSchema);
     return { accessToken: value.access_token, refreshToken: value.refresh_token, expiresIn: value.expires_in, scope: value.scope };
   }
 
   async profile(accessToken: string): Promise<SpotifyProfile> {
     const response = await this.config.fetch("https://api.spotify.com/v1/me", { headers: { authorization: `Bearer ${accessToken}` } });
-    if (!response.ok) throw spotifyFailure(response);
-    const value = profileSchema.parse(await response.json());
+    const value = await spotifyJson(response, profileSchema);
     return { id: value.id, displayName: value.display_name, imageUrl: value.images[0]?.url ?? null };
   }
 }
@@ -926,7 +960,77 @@ Run: `pnpm test src/lib/auth/repository.test.ts`
 
 Expected: FAIL because `createMemoryAccountRepository` is missing.
 
-- [ ] **Step 6: Implement repository interface, memory fake, and Drizzle adapter**
+- [ ] **Step 5b: Write the real PostgreSQL adapter test before its implementation**
+
+Add the integration runner and package script:
+
+```ts
+// vitest.integration.config.ts
+import { defineConfig } from "vitest/config";
+import { fileURLToPath } from "node:url";
+
+export default defineConfig({
+  resolve: { alias: {
+    "@": fileURLToPath(new URL("./src", import.meta.url)),
+    "server-only": fileURLToPath(new URL("./src/test/server-only.ts", import.meta.url)),
+  } },
+  test: { environment: "node", include: ["tests/integration/**/*.test.ts"] },
+});
+```
+
+```json
+"test:integration": "vitest run --config vitest.integration.config.ts"
+```
+
+Create `tests/integration/repository.test.ts` before adding the Drizzle adapter or database close function:
+
+```ts
+import { randomUUID } from "node:crypto";
+import { afterAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { closeDb, getDb } from "@/lib/db/client";
+import { users } from "@/lib/db/schema";
+import { createDrizzleAccountRepository } from "@/lib/auth/repository";
+
+const spotifyUserId = `spotify-${randomUUID()}`;
+
+afterAll(async () => {
+  await getDb().delete(users).where(eq(users.spotifyUserId, spotifyUserId));
+  await closeDb();
+});
+
+describe("Drizzle linked-account repository", () => {
+  it("persists a linked account and reads it back through PostgreSQL", async () => {
+    const repository = createDrizzleAccountRepository();
+    const saved = await repository.upsert({ spotifyUserId, displayName: "Ada", imageUrl: null, encryptedAccessToken: "sealed-access", encryptedRefreshToken: "sealed-refresh", scopes: "user-library-read", accessTokenExpiresAt: new Date(10_000) });
+    await expect(repository.findByUserId(saved.userId)).resolves.toMatchObject({ spotifyUserId, displayName: "Ada", encryptedAccessToken: "sealed-access" });
+  });
+
+  it("reuses the same user row when the same Spotify account links again", async () => {
+    const repository = createDrizzleAccountRepository();
+    const first = await repository.upsert({ spotifyUserId, displayName: "Ada", imageUrl: null, encryptedAccessToken: "a1", encryptedRefreshToken: "r1", scopes: "user-library-read", accessTokenExpiresAt: new Date(10_000) });
+    const second = await repository.upsert({ spotifyUserId, displayName: "Ada Lovelace", imageUrl: null, encryptedAccessToken: "a2", encryptedRefreshToken: "r2", scopes: "user-library-read", accessTokenExpiresAt: new Date(20_000) });
+    expect(second.userId).toBe(first.userId);
+    await expect(repository.findByUserId(first.userId)).resolves.toMatchObject({ displayName: "Ada Lovelace", encryptedAccessToken: "a2" });
+  });
+
+  it("returns null for an unknown user", async () => {
+    await expect(createDrizzleAccountRepository().findByUserId(randomUUID())).resolves.toBeNull();
+  });
+});
+```
+
+Task 4 now requires a migrated throwaway PostgreSQL database. Run:
+
+```bash
+test -n "${DATABASE_URL:-}"
+pnpm db:migrate
+pnpm test:integration
+```
+
+Expected: FAIL because `createDrizzleAccountRepository` and `closeDb` do not exist. A connection or migration failure is an environment failure, not the expected RED.
+
+- [ ] **Step 6: Implement repository interface, memory fake, Drizzle adapter, and database lifecycle**
 
 Implement `src/lib/auth/repository.ts` with this public contract and transactions that upsert `users` by `spotifyUserId`, then upsert `spotifyAccounts` by `userId`:
 
@@ -978,14 +1082,44 @@ export function createDrizzleAccountRepository(db = getDb()): LinkedAccountRepos
 }
 ```
 
-- [ ] **Step 7: Verify GREEN and commit**
+Refactor `src/lib/db/client.ts` so it owns and can close both cached handles:
 
-Run: `pnpm test src/lib/spotify/oauth.test.ts src/lib/auth/repository.test.ts && pnpm typecheck`
+```ts
+import "server-only";
+import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
+import { getEnv } from "@/lib/config/env";
+import * as schema from "./schema";
 
-Expected: five passing tests and zero type errors.
+type Database = PostgresJsDatabase<typeof schema>;
+type SqlClient = ReturnType<typeof postgres>;
+
+let database: Database | undefined;
+let sqlClient: SqlClient | undefined;
+
+export function getDb(): Database {
+  if (database) return database;
+  sqlClient = postgres(getEnv().DATABASE_URL, { prepare: false });
+  database = drizzle(sqlClient, { schema });
+  return database;
+}
+
+export async function closeDb(): Promise<void> {
+  const client = sqlClient;
+  database = undefined;
+  sqlClient = undefined;
+  if (client) await client.end({ timeout: 5 });
+}
+```
+
+- [ ] **Step 7: Verify unit and PostgreSQL GREEN, then commit**
+
+Run: `pnpm test:integration && pnpm test src/lib/spotify/oauth.test.ts src/lib/auth/repository.test.ts && pnpm typecheck`
+
+Expected: three PostgreSQL integration tests and all focused unit tests pass, the process exits without an open-client warning, and type-checking succeeds.
 
 ```bash
-git add src/lib/spotify src/lib/auth/repository.ts src/lib/auth/repository.test.ts
+git add package.json pnpm-lock.yaml vitest.integration.config.ts tests/integration src/lib/db/client.ts src/lib/spotify src/lib/auth/repository.ts src/lib/auth/repository.test.ts
 git commit -m "feat: add spotify account integration"
 ```
 
@@ -1647,8 +1781,8 @@ git commit -m "feat: add spotify foundation interface"
 **Files:**
 - Create: `playwright.config.ts`
 - Create: `tests/e2e/landing.spec.ts`
-- Create: `vitest.integration.config.ts`
-- Create: `tests/integration/repository.test.ts`
+- Create: `tests/e2e/authenticated-dashboard.spec.ts`
+- Create: `tests/e2e/support/mock-callback-session.ts`
 - Create: `.github/workflows/ci.yml`
 - Create: `README.md`
 - Modify: `package.json`
@@ -1684,68 +1818,81 @@ test("unauthenticated dashboard visits redirect to the landing page", async ({ p
 });
 ```
 
-- [ ] **Step 1b: Cover the Drizzle adapter against a real PostgreSQL**
-
-The unit suite only exercises the in-memory fake, so the Drizzle adapter and the generated migration are otherwise never executed. This test runs against a real database in CI and locally when `DATABASE_URL` points at a throwaway database.
+Add a test-only helper that reproduces a successful callback's external result without adding a production Route Handler, middleware exception, environment-controlled bypass, or other production path:
 
 ```ts
-// vitest.integration.config.ts
-import { defineConfig } from "vitest/config";
-import { fileURLToPath } from "node:url";
+// tests/e2e/support/mock-callback-session.ts
+import { createHmac, randomUUID } from "node:crypto";
+import type { BrowserContext } from "@playwright/test";
+import postgres from "postgres";
 
-export default defineConfig({
-  resolve: { alias: {
-    "@": fileURLToPath(new URL("./src", import.meta.url)),
-    "server-only": fileURLToPath(new URL("./src/test/server-only.ts", import.meta.url)),
-  } },
-  test: { environment: "node", include: ["tests/integration/**/*.test.ts"] },
-});
+function sessionToken(payload: { userId: string; expiresAt: number }, secret: string): string {
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = createHmac("sha256", secret).update(encoded).digest("base64url");
+  return `${encoded}.${signature}`;
+}
+
+export async function establishMockCallbackSession(
+  context: BrowserContext,
+  input: { displayName: string },
+): Promise<() => Promise<void>> {
+  const databaseUrl = process.env.DATABASE_URL;
+  const sessionSecret = process.env.SESSION_SECRET;
+  if (!databaseUrl || !sessionSecret) throw new Error("E2E database and session configuration are required");
+
+  const sql = postgres(databaseUrl, { prepare: false });
+  const spotifyUserId = `e2e-${randomUUID()}`;
+  const [user] = await sql<{ id: string }[]>`
+    insert into users (spotify_user_id, display_name)
+    values (${spotifyUserId}, ${input.displayName})
+    returning id
+  `;
+  if (!user) throw new Error("E2E user creation failed");
+  await sql`
+    insert into spotify_accounts
+      (user_id, encrypted_access_token, encrypted_refresh_token, scopes, access_token_expires_at)
+    values
+      (${user.id}, 'e2e-access', 'e2e-refresh', 'user-library-read', ${new Date(Date.now() + 3_600_000)})
+  `;
+
+  await context.addCookies([{
+    name: "mood_sorter_session",
+    value: sessionToken({ userId: user.id, expiresAt: Date.now() + 60_000 }, sessionSecret),
+    domain: "127.0.0.1",
+    path: "/",
+    httpOnly: true,
+    secure: false,
+    sameSite: "Lax",
+  }]);
+
+  return async () => {
+    await sql`delete from users where id = ${user.id}`;
+    await sql.end({ timeout: 5 });
+  };
+}
 ```
 
 ```ts
-// tests/integration/repository.test.ts
-import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
-import { getDb } from "@/lib/db/client";
-import { users } from "@/lib/db/schema";
-import { createDrizzleAccountRepository } from "@/lib/auth/repository";
+// tests/e2e/authenticated-dashboard.spec.ts
+import { expect, test } from "@playwright/test";
+import { establishMockCallbackSession } from "./support/mock-callback-session";
 
-const spotifyUserId = `spotify-${randomUUID()}`;
-
-afterAll(async () => {
-  await getDb().delete(users);
-});
-
-describe("Drizzle linked-account repository", () => {
-  it("persists a linked account and reads it back through PostgreSQL", async () => {
-    const repository = createDrizzleAccountRepository();
-    const saved = await repository.upsert({ spotifyUserId, displayName: "Ada", imageUrl: null, encryptedAccessToken: "sealed-access", encryptedRefreshToken: "sealed-refresh", scopes: "user-library-read", accessTokenExpiresAt: new Date(10_000) });
-    await expect(repository.findByUserId(saved.userId)).resolves.toMatchObject({ spotifyUserId, displayName: "Ada", encryptedAccessToken: "sealed-access" });
-  });
-
-  it("reuses the same user row when the same Spotify account links again", async () => {
-    const repository = createDrizzleAccountRepository();
-    const first = await repository.upsert({ spotifyUserId, displayName: "Ada", imageUrl: null, encryptedAccessToken: "a1", encryptedRefreshToken: "r1", scopes: "user-library-read", accessTokenExpiresAt: new Date(10_000) });
-    const second = await repository.upsert({ spotifyUserId, displayName: "Ada Lovelace", imageUrl: null, encryptedAccessToken: "a2", encryptedRefreshToken: "r2", scopes: "user-library-read", accessTokenExpiresAt: new Date(20_000) });
-    expect(second.userId).toBe(first.userId);
-    await expect(repository.findByUserId(first.userId)).resolves.toMatchObject({ displayName: "Ada Lovelace", encryptedAccessToken: "a2" });
-  });
-
-  it("returns null for an unknown user", async () => {
-    await expect(createDrizzleAccountRepository().findByUserId(randomUUID())).resolves.toBeNull();
-  });
+test("a mocked successful callback session reaches the authenticated dashboard", async ({ context, page }) => {
+  const cleanup = await establishMockCallbackSession(context, { displayName: "Ada" });
+  try {
+    await page.goto("/dashboard");
+    await expect(page).toHaveURL("http://127.0.0.1:3000/dashboard");
+    await expect(page.getByText(/connected as ada/i)).toBeVisible();
+    for (const mood of ["Chill", "Hype", "Focus", "Sad", "Happy"]) {
+      await expect(page.getByText(mood, { exact: true })).toBeVisible();
+    }
+  } finally {
+    await cleanup();
+  }
 });
 ```
 
-Add the script to `package.json`:
-
-```json
-"test:integration": "vitest run --config vitest.integration.config.ts"
-```
-
-Run: `pnpm db:migrate && pnpm test:integration`
-
-Expected: three passing tests against the migrated database.
+The callback-handler unit test from Task 5 remains the proof that a valid Spotify callback writes the linked account and session cookie. This browser fixture mocks only that external result and verifies that the real application accepts it.
 
 - [ ] **Step 2: Configure Playwright and run the acceptance contract**
 
@@ -1763,9 +1910,19 @@ export default defineConfig({
 });
 ```
 
-Run: `pnpm exec playwright install chromium && pnpm test:e2e`
+`DATABASE_URL` must point to a migrated throwaway PostgreSQL database. All five validated environment variables must be present. Chromium must be installed. The integration and authenticated-browser fixtures write test rows and remove only rows they created.
 
-Expected: both acceptance tests pass. The landing-page behavior already completed a component-level RED/GREEN cycle in Task 6; this browser test verifies the integrated route and rendered page.
+Run:
+
+```bash
+test -n "${DATABASE_URL:-}"
+pnpm db:migrate
+pnpm exec playwright install chromium
+pnpm test:integration
+pnpm test:e2e
+```
+
+Expected: the three PostgreSQL integration tests and four Chromium acceptance tests pass. The landing-page behavior already completed a component-level RED/GREEN cycle in Task 6; these browser tests verify the integrated routes and both authentication states.
 
 - [ ] **Step 3: Add CI workflow**
 
@@ -1880,7 +2037,7 @@ pnpm test:e2e
 pnpm build
 ```
 
-`pnpm test:integration` runs against the database in `DATABASE_URL` and deletes rows from it. Point it at a throwaway database, never at real data.
+`pnpm test:integration` and `pnpm test:e2e` require a migrated throwaway database in `DATABASE_URL`; run `pnpm db:migrate` first. The fixtures write test rows and remove only rows they created. Never point either command at real data.
 
 ## Security
 
@@ -1889,9 +2046,14 @@ Never commit `.env.local`, database credentials, Spotify access or refresh token
 
 - [ ] **Step 5: Run full verification and commit**
 
+Before running the final sequence, install Chromium, set all five validated environment variables, and ensure `DATABASE_URL` targets a migrated throwaway PostgreSQL database.
+
 Run:
 
 ```bash
+test -n "${DATABASE_URL:-}"
+pnpm db:migrate
+pnpm exec playwright install chromium
 pnpm lint
 pnpm typecheck
 pnpm test
@@ -1901,7 +2063,7 @@ pnpm build
 git diff --check
 ```
 
-Expected: every command exits `0`; Vitest reports all unit/component tests passing; the integration suite reports three passing tests against PostgreSQL; Playwright reports three passing Chromium tests; Next.js reports a successful production build.
+Expected: every command exits `0`; Vitest reports all unit/component tests passing; the integration suite reports three passing tests against PostgreSQL; Playwright reports four passing Chromium tests; Next.js reports a successful production build.
 
 ```bash
 git add .github playwright.config.ts tests README.md package.json pnpm-lock.yaml

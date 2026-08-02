@@ -2,8 +2,8 @@
 graphify-out/
 .next/
 node_modules/
-.env
-.env.local
+.env*
+!.env.example
 coverage/
 playwright-report/
 test-results/

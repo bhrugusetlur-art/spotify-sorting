@@ -21,7 +21,9 @@ function decodeBase64Url(value: string): Buffer | null {
 }
 
 export function readSessionToken(token: string, secret: string, now = Date.now()): SessionPayload | null {
-  const [encoded, signature] = token.split(".");
+  const segments = token.split(".");
+  if (segments.length !== 2) return null;
+  const [encoded, signature] = segments;
   if (!encoded || !signature) return null;
   const provided = decodeBase64Url(signature);
   if (!provided) return null;

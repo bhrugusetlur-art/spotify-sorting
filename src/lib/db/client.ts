@@ -4,11 +4,23 @@ import postgres from "postgres";
 import { getEnv } from "@/lib/config/env";
 import * as schema from "./schema";
 
-let database: PostgresJsDatabase<typeof schema> | undefined;
+type Database = PostgresJsDatabase<typeof schema>;
+type SqlClient = ReturnType<typeof postgres>;
 
-export function getDb() {
+let database: Database | undefined;
+let sqlClient: SqlClient | undefined;
+
+export function getDb(): Database {
   if (database) return database;
 
-  const client = postgres(getEnv().DATABASE_URL, { prepare: false });
-  return (database = drizzle(client, { schema }));
+  sqlClient = postgres(getEnv().DATABASE_URL, { prepare: false });
+  database = drizzle(sqlClient, { schema });
+  return database;
+}
+
+export async function closeDb(): Promise<void> {
+  const client = sqlClient;
+  database = undefined;
+  sqlClient = undefined;
+  if (client) await client.end({ timeout: 5 });
 }

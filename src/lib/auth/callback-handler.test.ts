@@ -31,6 +31,40 @@ describe("Spotify callback handler", () => {
     expect(ports.profile).not.toHaveBeenCalled();
   });
 
+  it("redirects callback errors to the configured application origin", async () => {
+    cookieStore.get.mockReturnValue(undefined);
+    const { createCallbackHandler } = await import("./callback-handler");
+    const handler = createCallbackHandler({
+      appOrigin: "http://127.0.0.1:3000",
+      repository: { upsert: vi.fn(), findByUserId: vi.fn() },
+      spotify: spotify(),
+      now: () => new Date(1_000),
+    });
+
+    const response = await handler(new Request("https://attacker.example/api/auth/spotify/callback?code=x&state=y"));
+
+    expect(response.headers.get("location")).toBe("http://127.0.0.1:3000/?error=AUTH_STATE_INVALID");
+  });
+
+  it("redirects successful logins to the configured application origin", async () => {
+    cookieStore.get.mockReturnValue({ value: seal({ state: "state-1", verifier: "verifier", expiresAt: 9_000 }, encryptionKey) });
+    const { createCallbackHandler } = await import("./callback-handler");
+    const ports = {
+      exchangeCode: vi.fn().mockResolvedValue({ accessToken: "access", refreshToken: "refresh", expiresIn: 3600, scope: "user-library-read" }),
+      profile: vi.fn().mockResolvedValue({ id: "spotify-1", displayName: "Ada", imageUrl: null }),
+    };
+    const handler = createCallbackHandler({
+      appOrigin: "http://127.0.0.1:3000",
+      repository: { upsert: vi.fn().mockResolvedValue({ userId: "user-1" }), findByUserId: vi.fn() },
+      spotify: ports,
+      now: () => new Date(1_000),
+    });
+
+    const response = await handler(new Request("https://attacker.example/api/auth/spotify/callback?code=x&state=state-1"));
+
+    expect(response.headers.get("location")).toBe("http://127.0.0.1:3000/dashboard");
+  });
+
   it("reports a denied consent screen once the state proves the request is ours", async () => {
     cookieStore.get.mockReturnValue({ value: seal({ state: "state-1", verifier: "verifier", expiresAt: 9_000 }, encryptionKey) });
     const { createCallbackHandler } = await import("./callback-handler");

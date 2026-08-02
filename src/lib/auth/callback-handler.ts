@@ -13,13 +13,14 @@ import { createSessionToken, SESSION_COOKIE, sessionCookieOptions } from "./sess
 const SESSION_LIFETIME_MS = 604_800_000;
 
 export type CallbackDependencies = {
+  appOrigin?: string;
   repository: LinkedAccountRepository;
   spotify: Pick<SpotifyOAuthClient, "exchangeCode" | "profile">;
   now: () => Date;
 };
 
-function errorRedirect(request: Request, code: ErrorCode = "AUTH_STATE_INVALID"): NextResponse {
-  const url = new URL("/", request.url);
+function errorRedirect(appOrigin: string, code: ErrorCode = "AUTH_STATE_INVALID"): NextResponse {
+  const url = new URL("/", appOrigin);
   url.searchParams.set("error", code);
   return NextResponse.redirect(url);
 }
@@ -27,33 +28,34 @@ function errorRedirect(request: Request, code: ErrorCode = "AUTH_STATE_INVALID")
 export function createCallbackHandler(dependencies?: CallbackDependencies) {
   return async function callback(request: Request): Promise<NextResponse> {
     const env = getEnv();
+    const appOrigin = dependencies?.appOrigin ?? new URL(env.SPOTIFY_REDIRECT_URI).origin;
     const url = new URL(request.url);
     const state = url.searchParams.get("state");
     const cookieStore = await cookies();
     const encoded = cookieStore.get(OAUTH_COOKIE)?.value;
-    if (!state || !encoded) return errorRedirect(request);
+    if (!state || !encoded) return errorRedirect(appOrigin);
 
     let oauth: OAuthCookie;
     try {
       oauth = unseal<OAuthCookie>(encoded, env.TOKEN_ENCRYPTION_KEY);
     } catch {
-      return errorRedirect(request);
+      return errorRedirect(appOrigin);
     }
 
     // State is checked before consuming the cookie so a forged callback cannot
     // cancel a legitimate authorization attempt that is still in progress.
     const now = dependencies?.now() ?? new Date();
-    if (oauth.state !== state || oauth.expiresAt <= now.getTime()) return errorRedirect(request);
+    if (oauth.state !== state || oauth.expiresAt <= now.getTime()) return errorRedirect(appOrigin);
 
     cookieStore.delete(OAUTH_COOKIE);
 
     const denied = url.searchParams.get("error");
     if (denied) {
-      return errorRedirect(request, denied === "access_denied" ? "SPOTIFY_PERMISSION_DENIED" : "SPOTIFY_UNAVAILABLE");
+      return errorRedirect(appOrigin, denied === "access_denied" ? "SPOTIFY_PERMISSION_DENIED" : "SPOTIFY_UNAVAILABLE");
     }
 
     const code = url.searchParams.get("code");
-    if (!code) return errorRedirect(request);
+    if (!code) return errorRedirect(appOrigin);
 
     const spotify = dependencies?.spotify ?? new SpotifyOAuthClient({
       clientId: env.SPOTIFY_CLIENT_ID,
@@ -76,9 +78,9 @@ export function createCallbackHandler(dependencies?: CallbackDependencies) {
         createSessionToken({ userId: account.userId, expiresAt: now.getTime() + SESSION_LIFETIME_MS }, env.SESSION_SECRET),
         sessionCookieOptions,
       );
-      return NextResponse.redirect(new URL("/dashboard", request.url));
+      return NextResponse.redirect(new URL("/dashboard", appOrigin));
     } catch (error) {
-      return errorRedirect(request, toErrorCode(error));
+      return errorRedirect(appOrigin, toErrorCode(error));
     }
   };
 }

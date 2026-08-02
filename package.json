@@ -11,6 +11,7 @@
     "build": "next build",
     "start": "next start --hostname 127.0.0.1",
     "lint": "eslint .",
+    "pretypecheck": "next typegen",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

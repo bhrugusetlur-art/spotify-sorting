@@ -134,7 +134,7 @@ Use this complete structure and copy, adjusting only line wrapping if required b
 ````markdown
 # Mood Sorter
 
-Sort your liked Spotify songs into five stable, private mood playlists—without duplicating tracks on repeat runs.
+Sort your liked Spotify songs into five stable, private mood playlists without duplicating tracks on repeat runs.
 
 ![Mood Sorter dashboard showing five generated playlists](docs/images/mood-sorter-dashboard.png)
 

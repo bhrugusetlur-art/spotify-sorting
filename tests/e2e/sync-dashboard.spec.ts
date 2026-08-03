@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 import postgres from "postgres";
 import { establishMockCallbackSession, establishMockCallbackSessionWithUser } from "./support/mock-callback-session";
@@ -38,6 +39,9 @@ test("an authenticated dashboard announces pending work and renders its successf
   });
 
   try {
+    if (process.env.UPDATE_README_SCREENSHOT === "1") {
+      await page.setViewportSize({ width: 1440, height: 640 });
+    }
     await page.goto("/dashboard");
     await page.getByRole("button", { name: "Sort My Music" }).click();
     await requestHeld;
@@ -49,6 +53,16 @@ test("an authenticated dashboard announces pending work and renders its successf
     await expect(page.getByRole("status")).toHaveText(/sorting complete/i);
     await expect(page.getByText("Total: 12")).toBeVisible();
     await expect(page.getByRole("link", { name: "Open in Spotify" })).toHaveCount(5);
+    if (process.env.UPDATE_README_SCREENSHOT === "1") {
+      await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
+      const screenshotPath = "docs/images/mood-sorter-dashboard.png";
+      const screenshot = await page.screenshot({
+        animations: "disabled",
+        path: screenshotPath,
+      });
+      expect(screenshot.byteLength).toBeGreaterThan(20_000);
+      expect((await stat(screenshotPath)).size).toBe(screenshot.byteLength);
+    }
   } finally {
     releaseResponse();
     await cleanup();

@@ -17,6 +17,7 @@
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:e2e": "playwright test",
+    "readme:visual": "UPDATE_README_SCREENSHOT=1 playwright test tests/e2e/sync-dashboard.spec.ts --grep 'authenticated dashboard announces pending work' --workers=1",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"

@@ -730,7 +730,7 @@ git diff --check
 
 Expected: every command exits 0; report exact unit, integration, and browser test counts.
 
-- [ ] **Step 4: Refresh and validate Graphify**
+- [x] **Step 4: Refresh and validate Graphify**
 
 Run the incremental Graphify pipeline, validate `graph.json`, regenerate `GRAPH_REPORT.md` and `graph.html`, report graph diff and benchmark, and ensure only ignored graph artifacts changed.
 
@@ -738,14 +738,14 @@ Run the incremental Graphify pipeline, validate `graph.json`, regenerate `GRAPH_
 
 Give the reviewer the approved spec, this plan, complete diff, migration, and test outputs. Require findings ordered by severity and exact file/line references. Resolve every actionable finding with a failing regression test before changing production code.
 
-- [ ] **Step 6: Commit documentation and review fixes**
+- [x] **Step 6: Commit documentation and review fixes**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-08-03-spotify-sorting-pipeline.md
 git commit -m "docs: document spotify sorting workflow"
 ```
 
-- [ ] **Step 7: Re-run the full verification after review fixes**
+- [x] **Step 7: Re-run the full verification after review fixes**
 
 Repeat Step 3 from a clean working tree. Do not rely on earlier task-level test runs.
 

@@ -1,5 +1,6 @@
 import "server-only";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { cookies } from "next/headers";
 
 export const SESSION_COOKIE = "mood_sorter_session";
 export type SessionPayload = { userId: string; expiresAt: number };
@@ -44,3 +45,7 @@ export const sessionCookieOptions = {
   path: "/",
   maxAge: 60 * 60 * 24 * 7,
 };
+
+export async function clearSession(): Promise<void> {
+  (await cookies()).delete(SESSION_COOKIE);
+}

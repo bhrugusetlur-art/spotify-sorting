@@ -320,6 +320,17 @@ describe("SpotifyWebApi pagination and mutations", () => {
     }
   });
 
+  it("rejects a zero-limit empty page that claims a continuation", async () => {
+    const { api, fetcher } = client([response(playlistItemsPage({
+      limit: 0,
+      total: 1,
+      next: "https://api.spotify.com/v1/playlists/playlist-1/items?offset=0",
+    }))]);
+
+    await expect(api.playlistItems("playlist-1")).rejects.toMatchObject({ code: "SPOTIFY_RESPONSE_INVALID" });
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it("rejects negative totals, repeated offsets, and no-progress pages", async () => {
     const full = Array.from({ length: 50 }, (_, index) => playlist(`playlist-${index}`));
     const negative = client([response(playlistPage({ total: -1 }))]);

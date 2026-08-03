@@ -1,7 +1,7 @@
 import "server-only";
 import { toErrorCode, type ErrorCode } from "@/lib/errors";
 import type { LinkedAccount } from "@/lib/auth/repository";
-import type { SyncResult } from "./result";
+import { toSafeFailureForCode, type SyncResult } from "./result";
 
 type SyncAccount = Pick<LinkedAccount, "userId" | "spotifyUserId">;
 
@@ -50,9 +50,10 @@ async function unauthorizedResponse(dependencies: SyncHandlerDependencies): Prom
 }
 
 async function resultFailureResponse(result: SyncResult, dependencies: SyncHandlerDependencies): Promise<Response> {
-  const code = result.run.failure?.code ?? "INTERNAL_ERROR";
+  const failure = toSafeFailureForCode(result.run.failure?.code);
+  const code = failure.code;
   if (code === "AUTH_REQUIRED") await clearSession(dependencies);
-  return Response.json({ error: safeError(code), ...publicResult(result) }, { status: statusFor(code) });
+  return Response.json({ error: failure, ...publicResult(result) }, { status: statusFor(code) });
 }
 
 async function errorResponse(error: unknown, dependencies: SyncHandlerDependencies): Promise<Response> {
@@ -66,10 +67,7 @@ function failureResponse(code: ErrorCode): Response {
 }
 
 function safeError(code: ErrorCode) {
-  return {
-    code,
-    message: messages[code],
-  };
+  return toSafeFailureForCode(code);
 }
 
 function publicResult(result: SyncResult) {
@@ -78,7 +76,7 @@ function publicResult(result: SyncResult) {
       id: result.run.id,
       status: result.run.status,
       counts: { ...result.run.counts },
-      failure: result.run.failure === null ? null : { ...result.run.failure },
+      failure: result.run.failure === null ? null : toSafeFailureForCode(result.run.failure.code),
       startedAt: result.run.startedAt.toISOString(),
       completedAt: result.run.completedAt?.toISOString() ?? null,
     },
@@ -108,17 +106,3 @@ const spotifyFailureCodes = new Set<ErrorCode>([
   "SPOTIFY_UNAVAILABLE",
   "PLAYLIST_SYNC_FAILED",
 ]);
-
-const messages: Record<ErrorCode, string> = {
-  AUTH_REQUIRED: "Please reconnect your Spotify account and try again.",
-  AUTH_STATE_INVALID: "Please reconnect your Spotify account and try again.",
-  SPOTIFY_PERMISSION_DENIED: "Spotify did not grant the permissions needed to sort your music.",
-  SPOTIFY_RATE_LIMITED: "Spotify is rate limiting requests. Please try again shortly.",
-  SPOTIFY_RESPONSE_INVALID: "Spotify returned an unexpected response. Please try again.",
-  SPOTIFY_UNAVAILABLE: "Spotify could not complete the sorting request. Please try again.",
-  PLAYLIST_SYNC_FAILED: "Spotify could not complete the sorting request. Please try again.",
-  SYNC_ALREADY_RUNNING: "A sorting run is already in progress.",
-  SYNC_INTERRUPTED: "This sorting run was interrupted by a newer request.",
-  CONFIGURATION_INVALID: "The sorting service is temporarily unavailable.",
-  INTERNAL_ERROR: "We could not sort your music. Please try again.",
-};

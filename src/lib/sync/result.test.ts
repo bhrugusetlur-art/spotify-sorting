@@ -20,8 +20,8 @@ describe("sync result serialization", () => {
     ])).toMatchObject({
       run,
       playlists: [
-        { mood: "chill", name: "Mood Sorter — Chill", url: "https://open.spotify.com/playlist/4NHQUGzhtTLFvgF5SZesLK" },
-        { mood: "happy", name: "Mood Sorter — Happy", url: "https://open.spotify.com/playlist/7ouMYWpwJ422jRcDASZB7P" },
+        { mood: "chill", name: "Mood Sorter — Chill", spotifyPlaylistId: "4NHQUGzhtTLFvgF5SZesLK", url: "https://open.spotify.com/playlist/4NHQUGzhtTLFvgF5SZesLK" },
+        { mood: "happy", name: "Mood Sorter — Happy", spotifyPlaylistId: "7ouMYWpwJ422jRcDASZB7P", url: "https://open.spotify.com/playlist/7ouMYWpwJ422jRcDASZB7P" },
       ],
     });
   });

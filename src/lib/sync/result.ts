@@ -5,6 +5,7 @@ import type { SyncRun } from "./run-repository";
 export type SyncPlaylistResult = {
   mood: GeneratedPlaylist["mood"];
   name: string;
+  spotifyPlaylistId: string;
   url: string;
 };
 
@@ -28,8 +29,16 @@ const messages = {
 } as const;
 
 export function toSafeFailure(error: unknown): SafeFailure {
-  const code = toErrorCode(error);
-  return { code, message: messages[code] };
+  return toSafeFailureForCode(toErrorCode(error));
+}
+
+export function toSafeFailureForCode(code: unknown): SafeFailure {
+  const safeCode = isErrorCode(code) ? code : "INTERNAL_ERROR";
+  return { code: safeCode, message: messages[safeCode] };
+}
+
+function isErrorCode(code: unknown): code is keyof typeof messages {
+  return typeof code === "string" && Object.hasOwn(messages, code);
 }
 
 export function toSyncResult(run: SyncRun, mappings: readonly GeneratedPlaylist[]): SyncResult {
@@ -37,7 +46,12 @@ export function toSyncResult(run: SyncRun, mappings: readonly GeneratedPlaylist[
     const mapping = mappings.find((entry) => entry.mood === mood);
     return mapping === undefined || !isSpotifyPlaylistId(mapping.spotifyPlaylistId)
       ? []
-      : [{ mood, name: mapping.playlistName, url: `https://open.spotify.com/playlist/${mapping.spotifyPlaylistId}` }];
+      : [{
+        mood,
+        name: mapping.playlistName,
+        spotifyPlaylistId: mapping.spotifyPlaylistId,
+        url: `https://open.spotify.com/playlist/${mapping.spotifyPlaylistId}`,
+      }];
   });
 
   return {

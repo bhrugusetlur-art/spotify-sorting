@@ -47,6 +47,7 @@ describe("sync service", () => {
       "chill", "hype", "focus", "sad", "happy"].map((mood) => ({
         mood,
         name: `Mood Sorter — ${title(mood as Mood)}`,
+        spotifyPlaylistId: `playlist${mood}`,
         url: `https://open.spotify.com/playlist/playlist${mood}`,
       })),
     );
@@ -95,6 +96,7 @@ describe("sync service", () => {
     expect(result.playlists).toEqual([{
       mood: "chill",
       name: "Mood Sorter — Chill",
+      spotifyPlaylistId: "playlistchill",
       url: "https://open.spotify.com/playlist/playlistchill",
     }]);
   });

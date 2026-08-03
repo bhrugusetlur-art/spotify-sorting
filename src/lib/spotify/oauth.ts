@@ -23,13 +23,18 @@ async function spotifyJson<T>(response: Response, schema: z.ZodType<T>): Promise
 }
 
 export class SpotifyOAuthClient {
-  constructor(private readonly config: { clientId: string; redirectUri: string; fetch: typeof fetch }) {}
+  constructor(private readonly config: { clientId: string; redirectUri: string; fetch: typeof fetch; timeoutMs?: number }) {}
 
   private async request(input: Parameters<typeof fetch>): Promise<Response> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs ?? 10_000);
     try {
-      return await this.config.fetch(...input);
+      const [url, init] = input;
+      return await this.config.fetch(url, { ...init, signal: controller.signal });
     } catch {
       throw new AppError("SPOTIFY_UNAVAILABLE");
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

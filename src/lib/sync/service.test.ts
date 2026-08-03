@@ -101,6 +101,22 @@ describe("sync service", () => {
     }]);
   });
 
+  it.each([
+    ["a different owner", "another-user", false],
+    ["a public response", spotifyUserId, true],
+    ["an unknown privacy response", spotifyUserId, null],
+  ])("rejects a created playlist with %s before persisting its mapping", async (_label, ownerId, publicValue) => {
+    const spotify = new FakeSpotify([track("chill")]);
+    spotify.createdOwnerId = ownerId;
+    spotify.createdPublic = publicValue;
+    const dependencies = memoryDependencies(spotify);
+
+    const result = await createSyncService(dependencies).syncLibrary({ userId, spotifyUserId });
+
+    expect(result.run).toMatchObject({ status: "failed", failure: { code: "SPOTIFY_RESPONSE_INVALID" } });
+    expect(result.playlists).toEqual([]);
+  });
+
   it("recovers only an exact owned private playlist and replaces stale public mappings", async () => {
     const spotify = new FakeSpotify([track("chill"), track("hype")]);
     spotify.playlists = [
@@ -109,8 +125,8 @@ describe("sync service", () => {
       playlist("unrelated", "Mood Sorter — Focus", "not the marker"),
     ];
     const dependencies = memoryDependencies(spotify);
-    await dependencies.playlists.upsert({ userId, mood: "chill", spotifyPlaylistId: "missing", playlistName: "old" });
-    await dependencies.playlists.upsert({ userId, mood: "hype", spotifyPlaylistId: "publichype", playlistName: "old" });
+    await seedMapping(dependencies, { userId, mood: "chill", spotifyPlaylistId: "missing", playlistName: "old" });
+    await seedMapping(dependencies, { userId, mood: "hype", spotifyPlaylistId: "publichype", playlistName: "old" });
 
     const result = await createSyncService(dependencies).syncLibrary({ userId, spotifyUserId });
 
@@ -152,7 +168,10 @@ describe("sync service", () => {
         await base.assertActiveLease(runId, leaseToken);
       },
     };
-    const service = createSyncService({ ...memoryDependencies(spotify), runs });
+    const dependencies = memoryDependencies(spotify);
+    dependencies.runs = runs;
+    dependencies.playlists = createMemoryGeneratedPlaylistRepository({ assertActiveLease: (id, token) => base.assertActiveLease(id, token) });
+    const service = createSyncService(dependencies);
 
     const oldRun = service.syncLibrary({ userId, spotifyUserId });
     await waitFor(() => assertions === 6);
@@ -170,8 +189,8 @@ describe("sync service", () => {
     const service = createSyncService(dependencies);
 
     expect(await service.loadLatestSyncResult(userId)).toBeNull();
-    await dependencies.playlists.upsert({ userId, mood: "happy", spotifyPlaylistId: "playlisthappy", playlistName: "Mood Sorter — Happy" });
-    await dependencies.playlists.upsert({ userId, mood: "chill", spotifyPlaylistId: "playlistchill", playlistName: "Mood Sorter — Chill" });
+    await seedMapping(dependencies, { userId, mood: "happy", spotifyPlaylistId: "playlisthappy", playlistName: "Mood Sorter — Happy" });
+    await seedMapping(dependencies, { userId, mood: "chill", spotifyPlaylistId: "playlistchill", playlistName: "Mood Sorter — Chill" });
     const active = await dependencies.runs.acquire(userId, now);
     await dependencies.runs.succeed(active.id, active.leaseToken, { total: 0, classified: 0, added: 0, skipped: 0, failed: 0 }, now);
 
@@ -182,11 +201,12 @@ describe("sync service", () => {
 });
 
 function memoryDependencies(spotify: FakeSpotify) {
+  const runs = createMemorySyncRunRepository({ randomUUID: () => "lease-token" });
   return {
     spotify,
     classifications: createMemoryClassificationRepository(),
-    playlists: createMemoryGeneratedPlaylistRepository(),
-    runs: createMemorySyncRunRepository({ randomUUID: () => "lease-token" }),
+    playlists: createMemoryGeneratedPlaylistRepository({ assertActiveLease: (id, token) => runs.assertActiveLease(id, token) }),
+    runs,
     now: () => new Date(now),
   };
 }
@@ -197,6 +217,8 @@ class FakeSpotify {
   readonly playlistItemsById = new Map<string, SpotifyPlaylistItem[]>();
   readonly creations: Array<{ name: string; description: string }> = [];
   readonly additions: Array<{ id: string; uris: string[] }> = [];
+  createdOwnerId: string | null = null;
+  createdPublic: boolean | null = false;
   savedTracksCalls = 0;
   failCreate: ((input: { call: number; name: string; description: string }) => Error | null) | null = null;
   failAddition: ((input: { id: string; call: number; uris: string[] }) => Error | null) | null = null;
@@ -216,7 +238,11 @@ class FakeSpotify {
     const failure = this.failCreate?.({ ...input, call: this.creations.length }) ?? null;
     if (failure !== null) throw failure;
     const mood = input.description.match(/Mood: (chill|hype|focus|sad|happy)\./)?.[1] as Mood;
-    const created = playlist(`playlist${mood}`, input.name, input.description);
+    const created = {
+      ...playlist(`playlist${mood}`, input.name, input.description),
+      ownerId: this.createdOwnerId ?? spotifyUserId,
+      public: this.createdPublic,
+    };
     this.playlists.push(created);
     return created;
   }
@@ -254,6 +280,15 @@ function playlist(id: string, name: string, description: string, publicValue = f
 }
 
 function title(mood: Mood): string { return mood.slice(0, 1).toUpperCase() + mood.slice(1); }
+
+async function seedMapping(
+  dependencies: ReturnType<typeof memoryDependencies>,
+  mapping: { userId: string; mood: Mood; spotifyPlaylistId: string; playlistName: string },
+): Promise<void> {
+  const active = await dependencies.runs.acquire(mapping.userId, new Date(now.getTime() - 1));
+  await dependencies.playlists.upsert(mapping, active);
+  await dependencies.runs.succeed(active.id, active.leaseToken, { total: 0, classified: 0, added: 0, skipped: 0, failed: 0 }, new Date(now.getTime() - 1));
+}
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;

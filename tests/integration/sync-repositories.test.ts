@@ -63,11 +63,28 @@ describe("Drizzle sorting repositories", () => {
   it("replaces a generated playlist mapping for one user and mood", async () => {
     const userId = await createUser();
     const repository = createDrizzleGeneratedPlaylistRepository();
-    await repository.upsert({ userId, mood: "chill", spotifyPlaylistId: "playlist-old", playlistName: "Mood Sorter — Chill" });
-    await repository.upsert({ userId, mood: "chill", spotifyPlaylistId: "playlist-new", playlistName: "Mood Sorter — Chill" });
+    const runs = createDrizzleSyncRunRepository();
+    const active = await runs.acquire(userId, new Date("2026-08-03T12:00:00.000Z"));
+    await repository.upsert({ userId, mood: "chill", spotifyPlaylistId: "playlist-old", playlistName: "Mood Sorter — Chill" }, active);
+    await repository.upsert({ userId, mood: "chill", spotifyPlaylistId: "playlist-new", playlistName: "Mood Sorter — Chill" }, active);
 
     await expect(repository.list(userId)).resolves.toEqual([
       { userId, mood: "chill", spotifyPlaylistId: "playlist-new", playlistName: "Mood Sorter — Chill" },
+    ]);
+  });
+
+  it("fences a stale lease from replacing a newer generated playlist mapping", async () => {
+    const userId = await createUser();
+    const repository = createDrizzleGeneratedPlaylistRepository();
+    const runs = createDrizzleSyncRunRepository();
+    const old = await runs.acquire(userId, new Date("2026-08-03T12:00:00.000Z"));
+    await repository.upsert({ userId, mood: "chill", spotifyPlaylistId: "playlist-old", playlistName: "Mood Sorter — Chill" }, old);
+    const fresh = await runs.acquire(userId, new Date("2026-08-03T12:15:00.000Z"));
+    await repository.upsert({ userId, mood: "chill", spotifyPlaylistId: "playlist-fresh", playlistName: "Mood Sorter — Chill" }, fresh);
+
+    await expect(repository.upsert({ userId, mood: "chill", spotifyPlaylistId: "playlist-stale", playlistName: "Mood Sorter — Chill" }, old)).rejects.toMatchObject({ code: "SYNC_INTERRUPTED" });
+    await expect(repository.list(userId)).resolves.toEqual([
+      { userId, mood: "chill", spotifyPlaylistId: "playlist-fresh", playlistName: "Mood Sorter — Chill" },
     ]);
   });
 

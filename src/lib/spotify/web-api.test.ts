@@ -140,7 +140,7 @@ describe("SpotifyWebApi request policy", () => {
     ]);
 
     await expect(api.currentUserPlaylists()).resolves.toEqual([]);
-    expect(tokenGetter.mock.calls).toEqual([[false], [true], [true], [true]]);
+    expect(tokenGetter.mock.calls).toEqual([[false], [true], [false], [false]]);
     expect(waits).toEqual([1_000, 1_000]);
     expect(fetcher).toHaveBeenCalledTimes(4);
   });
@@ -179,6 +179,28 @@ describe("SpotifyWebApi request policy", () => {
 
     await expect(api.currentUserPlaylists()).rejects.toMatchObject({ code: "SPOTIFY_RESPONSE_INVALID" });
   });
+
+  it.each([
+    ["creation", (api: SpotifyWebApi) => api.createPlaylist({ name: "Mood Sorter — Chill", description: "Managed by Mood Sorter. Mood: chill." })],
+    ["item addition", (api: SpotifyWebApi) => api.addPlaylistItems("playlist-1", ["spotify:track:one"])],
+  ])("does not replay a POST %s after an ambiguous network failure", async (_label, operation) => {
+    const { api, fetcher, waits } = client([new TypeError("connection dropped")]);
+
+    await expect(operation(api)).rejects.toMatchObject({ code: "SPOTIFY_UNAVAILABLE" });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(waits).toEqual([]);
+  });
+
+  it.each([
+    ["creation", (api: SpotifyWebApi) => api.createPlaylist({ name: "Mood Sorter — Chill", description: "Managed by Mood Sorter. Mood: chill." })],
+    ["item addition", (api: SpotifyWebApi) => api.addPlaylistItems("playlist-1", ["spotify:track:one"])],
+  ])("does not replay a POST %s after an ambiguous server failure", async (_label, operation) => {
+    const { api, fetcher, waits } = client([response({}, { status: 500 })]);
+
+    await expect(operation(api)).rejects.toMatchObject({ code: "SPOTIFY_UNAVAILABLE" });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(waits).toEqual([]);
+  });
 });
 
 describe("SpotifyWebApi pagination and mutations", () => {
@@ -194,14 +216,14 @@ describe("SpotifyWebApi pagination and mutations", () => {
     expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([`${base}/me/tracks?limit=50&offset=0`, `${base}/me/tracks?limit=50&offset=50`]);
   });
 
-  it.each(["id", "uri"] as const)("rejects a saved track object missing its %s", async (field) => {
+  it.each(["id", "uri"] as const)("keeps a malformed individual saved track as an unsupported item when its %s is missing", async (field) => {
     const malformedTrack = { ...track(), [field]: undefined };
     const { api } = client([response(savedPage({ items: [{ added_at: "2024-01-01T00:00:00Z", track: malformedTrack }] }))]);
 
-    await expect(api.savedTracks()).rejects.toMatchObject({ code: "SPOTIFY_RESPONSE_INVALID" });
+    await expect(api.savedTracks()).resolves.toEqual([{ addedAt: "2024-01-01T00:00:00Z", item: null }]);
   });
 
-  it("rejects a present saved track with an empty id", async () => {
+  it("keeps a present saved track with an empty id as unsupported", async () => {
     const { api } = client([response(savedPage({ items: [{
       added_at: "2024-01-01T00:00:00Z",
       track: {
@@ -217,10 +239,10 @@ describe("SpotifyWebApi pagination and mutations", () => {
       },
     }] }))]);
 
-    await expect(api.savedTracks()).rejects.toMatchObject({ code: "SPOTIFY_RESPONSE_INVALID" });
+    await expect(api.savedTracks()).resolves.toEqual([{ addedAt: "2024-01-01T00:00:00Z", item: null }]);
   });
 
-  it("rejects a present saved track with an empty uri", async () => {
+  it("keeps a present saved track with an empty uri as unsupported", async () => {
     const { api } = client([response(savedPage({ items: [{
       added_at: "2024-01-01T00:00:00Z",
       track: {
@@ -236,7 +258,21 @@ describe("SpotifyWebApi pagination and mutations", () => {
       },
     }] }))]);
 
-    await expect(api.savedTracks()).rejects.toMatchObject({ code: "SPOTIFY_RESPONSE_INVALID" });
+    await expect(api.savedTracks()).resolves.toEqual([{ addedAt: "2024-01-01T00:00:00Z", item: null }]);
+  });
+
+  it("keeps mixed valid, null, and malformed saved items while validating the page envelope", async () => {
+    const { api } = client([response(savedPage({ items: [
+      { added_at: "2024-01-01T00:00:00Z", track: track("spotify:track:valid") },
+      { added_at: "2024-01-02T00:00:00Z", track: null },
+      { added_at: "2024-01-03T00:00:00Z", track: { type: "track", id: 12 } },
+    ] }))]);
+
+    await expect(api.savedTracks()).resolves.toMatchObject([
+      { item: { id: "valid", uri: "spotify:track:valid" } },
+      { item: null },
+      { item: null },
+    ]);
   });
 
   it("fetches 50-item current-user playlist pages through the short final page", async () => {
@@ -246,11 +282,18 @@ describe("SpotifyWebApi pagination and mutations", () => {
     await expect(api.currentUserPlaylists()).resolves.toHaveLength(51);
   });
 
-  it("rejects a null next page before the validated playlist total is reached", async () => {
+  it("accepts next:null as a terminal page even when the reported total is larger", async () => {
     const full = Array.from({ length: 50 }, (_, index) => playlist(`playlist-${index}`));
     const { api } = client([response(playlistPage({ items: full, offset: 0, total: 100, next: null }))]);
 
-    await expect(api.currentUserPlaylists()).rejects.toMatchObject({ code: "SPOTIFY_RESPONSE_INVALID" });
+    await expect(api.currentUserPlaylists()).resolves.toHaveLength(50);
+  });
+
+  it("accepts a short page as terminal even when the reported total is larger", async () => {
+    const { api, fetcher } = client([response(playlistPage({ items: [playlist("playlist-1")], total: 100, next: "https://api.spotify.com/v1/me/playlists?offset=1" }))]);
+
+    await expect(api.currentUserPlaylists()).resolves.toHaveLength(1);
+    expect(fetcher).toHaveBeenCalledOnce();
   });
 
   it("fetches playlist-item pages through the short final page", async () => {
@@ -268,8 +311,8 @@ describe("SpotifyWebApi pagination and mutations", () => {
     const repeated = client([response(playlistPage({ items: full, offset: 0, total: 100, next: "https://api.spotify.com/v1/me/playlists?offset=50" })), response(playlistPage({ items: full, offset: 0, total: 100 }))]);
     await expect(repeated.api.currentUserPlaylists()).rejects.toMatchObject({ code: "SPOTIFY_RESPONSE_INVALID" });
 
-    const stalled = client([response(playlistPage({ items: full, offset: 0, total: 100, next: "https://api.spotify.com/v1/me/playlists?offset=50" })), response(playlistPage({ items: [], offset: 50, total: 100, next: "https://api.spotify.com/v1/me/playlists?offset=100" }))]);
-    await expect(stalled.api.currentUserPlaylists()).rejects.toMatchObject({ code: "SPOTIFY_RESPONSE_INVALID" });
+    const oversized = client([response(playlistPage({ items: [...full, playlist("playlist-overflow")], offset: 0, total: 100, next: "https://api.spotify.com/v1/me/playlists?offset=50" }))]);
+    await expect(oversized.api.currentUserPlaylists()).rejects.toMatchObject({ code: "SPOTIFY_RESPONSE_INVALID" });
   });
 
   it("creates a private playlist with the documented endpoint and safe result", async () => {

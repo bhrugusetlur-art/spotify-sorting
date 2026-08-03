@@ -27,7 +27,7 @@ const savedTrackSchema = z.object({
 
 const savedItemSchema = z.object({
   added_at: nullableString,
-  track: savedTrackSchema.nullable().optional().transform((value) => value ?? null),
+  track: z.unknown().nullable().optional(),
 });
 
 const playlistSchema = z.object({
@@ -99,18 +99,25 @@ export function toSavedTrackPage(value: z.output<typeof savedTracksPageSchema>):
     ...value,
     items: value.items.map((item) => ({
       addedAt: item.added_at,
-      item: item.track === null ? null : {
-        type: item.track.type,
-        id: item.track.id,
-        uri: item.track.uri,
-        name: item.track.name,
-        artists: item.track.artists,
-        album: item.track.album === null ? null : { id: item.track.album.id, name: item.track.album.name, releaseDate: item.track.album.release_date },
-        durationMs: item.track.duration_ms,
-        explicit: item.track.explicit,
-        isLocal: item.track.is_local,
-      },
+      item: toSavedTrack(item.track),
     })),
+  };
+}
+
+function toSavedTrack(value: unknown): SpotifySavedItem["item"] {
+  const parsed = savedTrackSchema.safeParse(value);
+  if (!parsed.success) return null;
+  const item = parsed.data;
+  return {
+    type: item.type,
+    id: item.id,
+    uri: item.uri,
+    name: item.name,
+    artists: item.artists,
+    album: item.album === null ? null : { id: item.album.id, name: item.album.name, releaseDate: item.album.release_date },
+    durationMs: item.duration_ms,
+    explicit: item.explicit,
+    isLocal: item.is_local,
   };
 }
 

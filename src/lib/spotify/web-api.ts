@@ -88,20 +88,20 @@ export class SpotifyWebApi {
 
     while (true) {
       const page = await fetchPage(requestedOffset);
-      if (page.offset !== requestedOffset || seenOffsets.has(page.offset) || page.total < page.offset + page.items.length) {
+      if (
+        page.offset !== requestedOffset
+        || seenOffsets.has(page.offset)
+        || page.items.length > page.limit
+        || page.total < page.offset + page.items.length
+      ) {
         throw new AppError("SPOTIFY_RESPONSE_INVALID");
       }
       seenOffsets.add(page.offset);
       all.push(...page.items);
 
       const nextOffset = page.offset + page.items.length;
-      if (page.items.length === 0) {
-        if (nextOffset < page.total) throw new AppError("SPOTIFY_RESPONSE_INVALID");
-        return all;
-      }
-      if (nextOffset >= page.total) return all;
-      if (page.next === null) throw new AppError("SPOTIFY_RESPONSE_INVALID");
-      if (page.items.length < page.limit || seenOffsets.has(nextOffset)) throw new AppError("SPOTIFY_RESPONSE_INVALID");
+      if (page.items.length < page.limit || page.next === null || nextOffset >= page.total) return all;
+      if (seenOffsets.has(nextOffset)) throw new AppError("SPOTIFY_RESPONSE_INVALID");
       requestedOffset = nextOffset;
     }
   }
@@ -120,12 +120,14 @@ export class SpotifyWebApi {
     let resilienceRetriesRemaining = 2;
     let resilienceRetryNumber = 0;
     let attempts = 0;
-    let forceRefresh = false;
+    let forceRefreshOnNextAttempt = false;
 
     while (attempts < maxTransportAttempts) {
       attempts += 1;
       let response: Response;
       try {
+        const forceRefresh = forceRefreshOnNextAttempt;
+        forceRefreshOnNextAttempt = false;
         const token = await this.options.tokens.get(forceRefresh);
         response = await this.fetchWithTimeout(`${apiBaseUrl}${path}`, {
           ...init,
@@ -133,7 +135,7 @@ export class SpotifyWebApi {
         });
       } catch (error) {
         if (error instanceof AppError) throw error;
-        if (resilienceRetriesRemaining > 0 && attempts < maxTransportAttempts) {
+        if (init?.method !== "POST" && resilienceRetriesRemaining > 0 && attempts < maxTransportAttempts) {
           resilienceRetriesRemaining -= 1;
           await this.sleep(resilienceWaits[resilienceRetryNumber]);
           resilienceRetryNumber += 1;
@@ -147,7 +149,7 @@ export class SpotifyWebApi {
       if (response.status === 401) {
         if (authReplayRemaining > 0 && attempts < maxTransportAttempts) {
           authReplayRemaining -= 1;
-          forceRefresh = true;
+          forceRefreshOnNextAttempt = true;
           continue;
         }
         await this.clearInvalidSession();
@@ -166,7 +168,7 @@ export class SpotifyWebApi {
       }
 
       if (response.status === 500 || response.status === 502 || response.status === 503) {
-        if (resilienceRetriesRemaining > 0 && attempts < maxTransportAttempts) {
+        if (init?.method !== "POST" && resilienceRetriesRemaining > 0 && attempts < maxTransportAttempts) {
           resilienceRetriesRemaining -= 1;
           await this.sleep(resilienceWaits[resilienceRetryNumber]);
           resilienceRetryNumber += 1;

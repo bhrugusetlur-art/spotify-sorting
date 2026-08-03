@@ -53,6 +53,31 @@ describe("getValidSpotifyAccessToken", () => {
     expect(refreshToken).toHaveBeenCalledWith("refresh");
   });
 
+  it("bounds a hung refresh without retrying it", async () => {
+    const repository = createMemoryAccountRepository();
+    const account = await repository.upsert(linkedInput());
+    const refreshToken = vi.fn(() => new Promise<never>(() => undefined));
+
+    await expect(getValidSpotifyAccessToken({
+      userId: account.userId,
+      repository,
+      encryptionKey: key,
+      now: new Date(5_000),
+      timeoutMs: 1,
+      spotify: { refreshToken },
+    })).rejects.toMatchObject({ code: "SPOTIFY_UNAVAILABLE" });
+    expect(refreshToken).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry a transient refresh failure", async () => {
+    const repository = createMemoryAccountRepository();
+    const account = await repository.upsert(linkedInput());
+    const refreshToken = vi.fn().mockRejectedValue(new TypeError("transient"));
+
+    await expect(getValidSpotifyAccessToken({ userId: account.userId, repository, encryptionKey: key, now: new Date(5_000), spotify: { refreshToken } })).rejects.toMatchObject({ code: "SPOTIFY_UNAVAILABLE" });
+    expect(refreshToken).toHaveBeenCalledOnce();
+  });
+
   it("raises the safe AUTH_REQUIRED code for an unknown user", async () => {
     await expect(getValidSpotifyAccessToken({ userId: "missing", repository: createMemoryAccountRepository(), encryptionKey: key, spotify: { refreshToken: vi.fn() } })).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
   });

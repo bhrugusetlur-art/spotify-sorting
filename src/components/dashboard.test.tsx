@@ -52,6 +52,15 @@ describe("Dashboard", () => {
     expect(screen.getByRole("button", { name: /sort my music/i })).toBeEnabled();
   });
 
+  it("initializes a persisted running sync as in progress with its action disabled", () => {
+    const running = result();
+    running.run = { ...running.run, status: "running", completedAt: null };
+    render(<Dashboard account={{ displayName: "Ada", imageUrl: null }} initialResult={running} />);
+
+    expect(screen.getByRole("button", { name: /sorting music/i })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent(/sorting your music/i);
+  });
+
   it("disables sorting and announces a pending status until the request resolves", async () => {
     let resolve!: (value: Response) => void;
     fetchMock.mockReturnValueOnce(new Promise<Response>((done) => { resolve = done; }));

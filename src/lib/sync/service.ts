@@ -1,5 +1,5 @@
 import "server-only";
-import { toErrorCode } from "@/lib/errors";
+import { AppError, toErrorCode } from "@/lib/errors";
 import { CLASSIFIER_VERSION, classifyTrack } from "@/lib/sorting/classifier";
 import { fingerprintTrack, normalizeLibrary } from "@/lib/sorting/normalize";
 import { batchUris, managedPlaylistMetadata, missingUris, resolveManagedPlaylist } from "@/lib/sorting/playlists";
@@ -127,14 +127,14 @@ async function resolveDestinations(
       playlists: currentPlaylists,
     });
     const playlist = resolution.kind === "create"
-      ? await createDestination(dependencies, active, resolution.metadata)
+      ? await createDestination(dependencies, active, input.spotifyUserId, resolution.metadata)
       : resolution.playlist;
     const mapping = await dependencies.playlists.upsert({
       userId: input.userId,
       mood,
       spotifyPlaylistId: playlist.id,
       playlistName: playlist.name ?? storedByMood.get(mood)?.playlistName ?? managedPlaylistMetadata(mood).name,
-    });
+    }, active);
     destinations.push({ mapping, uris: urisByMood.get(mood) ?? [] });
   }
 
@@ -144,10 +144,13 @@ async function resolveDestinations(
 async function createDestination(
   dependencies: SyncServiceDependencies,
   active: ActiveSyncRun,
+  spotifyUserId: string,
   metadata: { name: string; description: string },
 ): Promise<SpotifyPlaylistSummary> {
   await dependencies.runs.assertActiveLease(active.id, active.leaseToken);
-  return dependencies.spotify.createPlaylist({ name: metadata.name, description: metadata.description });
+  const playlist = await dependencies.spotify.createPlaylist({ name: metadata.name, description: metadata.description });
+  if (playlist.ownerId !== spotifyUserId || playlist.public !== false) throw new AppError("SPOTIFY_RESPONSE_INVALID");
+  return playlist;
 }
 
 function countsFor(library: NormalizedLibrary, confirmed: { added: number; skipped: number }): SyncCounts {

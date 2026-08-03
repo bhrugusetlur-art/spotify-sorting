@@ -25,7 +25,9 @@ export function Dashboard({
   initialResult: PublicSyncResult | null;
 }) {
   const [result, setResult] = useState<PublicSyncResult | null>(initialResult);
-  const [phase, setPhase] = useState<DashboardPhase>(initialResult?.run.status === "failed" ? "failed" : "idle");
+  const [phase, setPhase] = useState<DashboardPhase>(
+    initialResult?.run.status === "running" ? "pending" : initialResult?.run.status === "failed" ? "failed" : "idle",
+  );
   const [message, setMessage] = useState(initialMessage(initialResult));
   const [needsLogin, setNeedsLogin] = useState(initialResult?.run.failure?.code === "AUTH_REQUIRED");
 
@@ -136,6 +138,7 @@ function ResultSummary({ result }: { result: PublicSyncResult }) {
 }
 
 function initialMessage(result: PublicSyncResult | null): string {
+  if (result?.run.status === "running") return "Sorting your music. This can take a moment.";
   if (result?.run.status === "failed") return result.run.failure?.message ?? fallbackFailure;
   return result?.run.status === "succeeded" ? "Sorting complete." : "Ready to sort your saved music.";
 }

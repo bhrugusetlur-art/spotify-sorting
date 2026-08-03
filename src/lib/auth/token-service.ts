@@ -11,6 +11,7 @@ export async function getValidSpotifyAccessToken(input: {
   spotify: { refreshToken(token: string): Promise<SpotifyTokenResponse> };
   now?: Date;
   forceRefresh?: boolean;
+  timeoutMs?: number;
 }): Promise<string> {
   const now = input.now ?? new Date();
   const account = await input.repository.findByUserId(input.userId);
@@ -21,7 +22,13 @@ export async function getValidSpotifyAccessToken(input: {
   }
 
   const oldRefreshToken = unseal<string>(account.encryptedRefreshToken, input.encryptionKey);
-  const tokens = await input.spotify.refreshToken(oldRefreshToken);
+  let tokens: SpotifyTokenResponse;
+  try {
+    tokens = await refreshWithinTimeout(() => input.spotify.refreshToken(oldRefreshToken), input.timeoutMs ?? 10_000);
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError("SPOTIFY_UNAVAILABLE");
+  }
   await input.repository.upsert({
     spotifyAccountId: account.spotifyAccountId,
     spotifyUserId: account.spotifyUserId,
@@ -33,4 +40,21 @@ export async function getValidSpotifyAccessToken(input: {
     accessTokenExpiresAt: new Date(now.getTime() + tokens.expiresIn * 1_000),
   });
   return tokens.accessToken;
+}
+
+function refreshWithinTimeout<T>(refresh: () => Promise<T>, timeoutMs: number): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return Promise.reject(new AppError("SPOTIFY_UNAVAILABLE"));
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new AppError("SPOTIFY_UNAVAILABLE")), timeoutMs);
+    void refresh().then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
 }

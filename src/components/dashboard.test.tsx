@@ -1,20 +1,19 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SyncResult } from "@/lib/sync/result";
+import type { PublicSyncResult } from "@/lib/sync/result";
 import { Dashboard } from "./dashboard";
 
 const moods = ["chill", "hype", "focus", "sad", "happy"] as const;
 
-function result(overrides: Partial<SyncResult> = {}): SyncResult {
+function result(overrides: Partial<PublicSyncResult> = {}): PublicSyncResult {
   return {
     run: {
       id: "run-1",
-      userId: "user-1",
       status: "succeeded",
       counts: { total: 12, classified: 10, added: 8, skipped: 1, failed: 2 },
       failure: null,
-      startedAt: new Date("2026-08-03T12:00:00.000Z"),
-      completedAt: new Date("2026-08-03T12:00:02.000Z"),
+      startedAt: "2026-08-03T12:00:00.000Z",
+      completedAt: "2026-08-03T12:00:02.000Z",
     },
     playlists: moods.map((mood) => ({
       mood,

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { MOODS, type Mood, type SafeFailure } from "@/lib/sorting/types";
-import type { SyncResult } from "@/lib/sync/result";
+import type { PublicSyncResult } from "@/lib/sync/result";
 
 const moodLabels: Record<Mood, string> = {
   chill: "Chill",
@@ -15,16 +15,16 @@ const moodLabels: Record<Mood, string> = {
 const fallbackFailure = "We could not sort your music. Please try again.";
 
 type DashboardPhase = "idle" | "pending" | "succeeded" | "failed";
-type SyncResponse = Partial<SyncResult> & { error?: Partial<SafeFailure> };
+type SyncResponse = Partial<PublicSyncResult> & { error?: Partial<SafeFailure> };
 
 export function Dashboard({
   account,
   initialResult,
 }: {
   account: { displayName: string | null; imageUrl: string | null };
-  initialResult: SyncResult | null;
+  initialResult: PublicSyncResult | null;
 }) {
-  const [result, setResult] = useState<SyncResult | null>(initialResult);
+  const [result, setResult] = useState<PublicSyncResult | null>(initialResult);
   const [phase, setPhase] = useState<DashboardPhase>(initialResult?.run.status === "failed" ? "failed" : "idle");
   const [message, setMessage] = useState(initialMessage(initialResult));
   const [needsLogin, setNeedsLogin] = useState(initialResult?.run.failure?.code === "AUTH_REQUIRED");
@@ -119,7 +119,7 @@ export function Dashboard({
   );
 }
 
-function ResultSummary({ result }: { result: SyncResult }) {
+function ResultSummary({ result }: { result: PublicSyncResult }) {
   const { counts } = result.run;
   return (
     <section aria-label="Latest sorting result" className="mt-8 rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
@@ -135,7 +135,7 @@ function ResultSummary({ result }: { result: SyncResult }) {
   );
 }
 
-function initialMessage(result: SyncResult | null): string {
+function initialMessage(result: PublicSyncResult | null): string {
   if (result?.run.status === "failed") return result.run.failure?.message ?? fallbackFailure;
   return result?.run.status === "succeeded" ? "Sorting complete." : "Ready to sort your saved music.";
 }
@@ -149,9 +149,9 @@ async function readResponse(response: Response): Promise<SyncResponse | null> {
   }
 }
 
-function resultFrom(payload: SyncResponse | null): SyncResult | null {
+function resultFrom(payload: SyncResponse | null): PublicSyncResult | null {
   if (!payload || !isSyncRun(payload.run) || !Array.isArray(payload.playlists)) return null;
-  return payload as SyncResult;
+  return payload as PublicSyncResult;
 }
 
 function failureFrom(payload: SyncResponse | null): SafeFailure {
@@ -161,13 +161,13 @@ function failureFrom(payload: SyncResponse | null): SafeFailure {
   return { code: "INTERNAL_ERROR", message: fallbackFailure };
 }
 
-function isSyncRun(run: SyncResponse["run"]): run is SyncResult["run"] {
+function isSyncRun(run: SyncResponse["run"]): run is PublicSyncResult["run"] {
   return typeof run === "object" && run !== null
     && (run.status === "succeeded" || run.status === "failed" || run.status === "running")
     && typeof run.counts === "object" && run.counts !== null;
 }
 
-function mergeResult(previous: SyncResult | null, next: SyncResult): SyncResult {
+function mergeResult(previous: PublicSyncResult | null, next: PublicSyncResult): PublicSyncResult {
   if (previous === null) return next;
   const playlists = new Map(previous.playlists.map((playlist) => [playlist.mood, playlist]));
   for (const playlist of next.playlists) playlists.set(playlist.mood, playlist);

@@ -14,6 +14,18 @@ export type SyncResult = {
   playlists: SyncPlaylistResult[];
 };
 
+export type PublicSyncResult = {
+  run: {
+    id: SyncRun["id"];
+    status: SyncRun["status"];
+    counts: SyncRun["counts"];
+    failure: SafeFailure | null;
+    startedAt: string;
+    completedAt: string | null;
+  };
+  playlists: SyncPlaylistResult[];
+};
+
 const messages = {
   AUTH_REQUIRED: "Please reconnect your Spotify account and try again.",
   SPOTIFY_PERMISSION_DENIED: "Spotify did not grant the permissions needed to sort your music.",
@@ -57,6 +69,20 @@ export function toSyncResult(run: SyncRun, mappings: readonly GeneratedPlaylist[
   return {
     run: cloneRun(run),
     playlists,
+  };
+}
+
+export function toPublicSyncResult(result: SyncResult): PublicSyncResult {
+  return {
+    run: {
+      id: result.run.id,
+      status: result.run.status,
+      counts: { ...result.run.counts },
+      failure: result.run.failure === null ? null : toSafeFailureForCode(result.run.failure.code),
+      startedAt: result.run.startedAt.toISOString(),
+      completedAt: result.run.completedAt?.toISOString() ?? null,
+    },
+    playlists: result.playlists.map((playlist) => ({ ...playlist })),
   };
 }
 

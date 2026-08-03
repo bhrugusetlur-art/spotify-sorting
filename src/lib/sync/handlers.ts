@@ -1,7 +1,7 @@
 import "server-only";
 import { toErrorCode, type ErrorCode } from "@/lib/errors";
 import type { LinkedAccount } from "@/lib/auth/repository";
-import { toSafeFailureForCode, type SyncResult } from "./result";
+import { toPublicSyncResult, toSafeFailureForCode, type SyncResult } from "./result";
 
 type SyncAccount = Pick<LinkedAccount, "userId" | "spotifyUserId">;
 
@@ -25,7 +25,7 @@ export function createSyncHandlers(dependencies: SyncHandlerDependencies): SyncH
         if (account === null) return unauthorizedResponse(dependencies);
         const result = await dependencies.syncLibrary({ userId: account.userId, spotifyUserId: account.spotifyUserId });
         return result.run.status === "succeeded"
-          ? Response.json(publicResult(result))
+          ? Response.json(toPublicSyncResult(result))
           : await resultFailureResponse(result, dependencies);
       } catch (error) {
         return errorResponse(error, dependencies);
@@ -36,7 +36,7 @@ export function createSyncHandlers(dependencies: SyncHandlerDependencies): SyncH
         const account = await dependencies.currentAccount();
         if (account === null) return unauthorizedResponse(dependencies);
         const result = await dependencies.latestResult(account.userId);
-        return Response.json(result === null ? { run: null, playlists: [] } : publicResult(result));
+        return Response.json(result === null ? { run: null, playlists: [] } : toPublicSyncResult(result));
       } catch (error) {
         return errorResponse(error, dependencies);
       }
@@ -53,7 +53,7 @@ async function resultFailureResponse(result: SyncResult, dependencies: SyncHandl
   const failure = toSafeFailureForCode(result.run.failure?.code);
   const code = failure.code;
   if (code === "AUTH_REQUIRED") await clearSession(dependencies);
-  return Response.json({ error: failure, ...publicResult(result) }, { status: statusFor(code) });
+  return Response.json({ error: failure, ...toPublicSyncResult(result) }, { status: statusFor(code) });
 }
 
 async function errorResponse(error: unknown, dependencies: SyncHandlerDependencies): Promise<Response> {
@@ -68,20 +68,6 @@ function failureResponse(code: ErrorCode): Response {
 
 function safeError(code: ErrorCode) {
   return toSafeFailureForCode(code);
-}
-
-function publicResult(result: SyncResult) {
-  return {
-    run: {
-      id: result.run.id,
-      status: result.run.status,
-      counts: { ...result.run.counts },
-      failure: result.run.failure === null ? null : toSafeFailureForCode(result.run.failure.code),
-      startedAt: result.run.startedAt.toISOString(),
-      completedAt: result.run.completedAt?.toISOString() ?? null,
-    },
-    playlists: result.playlists.map((playlist) => ({ ...playlist })),
-  };
 }
 
 function statusFor(code: ErrorCode): number {

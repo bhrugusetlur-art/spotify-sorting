@@ -749,6 +749,6 @@ git commit -m "docs: document spotify sorting workflow"
 
 Repeat Step 3 from a clean working tree. Do not rely on earlier task-level test runs.
 
-- [ ] **Step 8: Integrate and monitor `main`**
+- [x] **Step 8: Integrate and monitor `main`**
 
 Fast-forward the feature branch into `main`, push `main`, watch the GitHub Actions run through a terminal result, and report any residual warnings separately from failures.

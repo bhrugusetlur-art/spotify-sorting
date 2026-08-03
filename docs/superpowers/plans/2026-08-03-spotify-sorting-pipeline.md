@@ -88,7 +88,7 @@
 - Produces error codes `SYNC_ALREADY_RUNNING`, `SYNC_INTERRUPTED`, and `SPOTIFY_RESPONSE_INVALID`.
 - Produces `users.spotifyAccountId`, `syncRuns.leaseToken`, one-running partial unique index, and latest-run index.
 
-- [ ] **Step 1: Write failing OAuth and memory-repository tests**
+- [x] **Step 1: Write failing OAuth and memory-repository tests**
 
 Add a profile assertion and legacy reconciliation test:
 
@@ -108,13 +108,13 @@ const reconciled = await repository.upsert(linkedInput({
 expect(reconciled.userId).toBe(legacy.userId);
 ```
 
-- [ ] **Step 2: Run unit tests and verify RED**
+- [x] **Step 2: Run unit tests and verify RED**
 
 Run: `pnpm test src/lib/spotify/oauth.test.ts src/lib/auth/repository.test.ts src/lib/auth/oauth-flow.test.ts src/lib/auth/token-service.test.ts src/lib/errors.test.ts`
 
 Expected: FAIL because `account_id`, `spotifyAccountId`, forced refresh, and new error codes are not implemented.
 
-- [ ] **Step 3: Add exact schema fields and identity signatures**
+- [x] **Step 3: Add exact schema fields and identity signatures**
 
 Implement these shapes:
 
@@ -148,7 +148,7 @@ uniqueIndex("sync_runs_one_running_per_user")
 index("sync_runs_user_started_at_idx").on(table.userId, table.startedAt),
 ```
 
-- [ ] **Step 4: Implement account-ID-first reconciliation and forced refresh**
+- [x] **Step 4: Implement account-ID-first reconciliation and forced refresh**
 
 The repository transaction must perform this exact search order:
 
@@ -163,13 +163,13 @@ Update the matched row's current public ID and profile, then upsert encrypted to
 
 Add `forceRefresh?: boolean` to `getValidSpotifyAccessToken`; bypass the 60-second cache window when true while retaining the old refresh token if Spotify omits a replacement.
 
-- [ ] **Step 5: Generate and inspect the migration**
+- [x] **Step 5: Generate and inspect the migration**
 
 Run: `pnpm exec drizzle-kit generate --name sorting_pipeline`
 
 Expected SQL includes `spotify_account_id`, `lease_token`, a unique account-ID index, `sync_runs_one_running_per_user`, and `sync_runs_user_started_at_idx`. It must not drop or rewrite existing tables.
 
-- [ ] **Step 6: Add PostgreSQL identity tests and verify GREEN**
+- [x] **Step 6: Add PostgreSQL identity tests and verify GREEN**
 
 Add cases proving a legacy public-ID row is updated in place, an account-ID relink with a changed public ID keeps the internal UUID, and two users cannot share one account ID.
 
@@ -182,7 +182,7 @@ pnpm test:integration
 
 Expected: all focused and integration tests PASS.
 
-- [ ] **Step 7: Commit Task 1**
+- [x] **Step 7: Commit Task 1**
 
 ```bash
 git add src/lib/db/schema.ts src/lib/spotify/oauth.ts src/lib/spotify/oauth.test.ts src/lib/auth src/lib/errors.ts src/lib/errors.test.ts tests/integration/repository.test.ts drizzle
@@ -201,7 +201,7 @@ git commit -m "feat: reconcile spotify account identity"
 - Produces: `SpotifyWebApi` with `savedTracks()`, `currentUserPlaylists()`, `playlistItems(id)`, `createPlaylist(input)`, and `addPlaylistItems(id, uris)`.
 - Produces safe internal records `SpotifySavedItem`, `SpotifyPlaylistSummary`, and `SpotifyPlaylistItem`.
 
-- [ ] **Step 1: Write failing request-policy tests**
+- [x] **Step 1: Write failing request-policy tests**
 
 Cover ordinary success, one `401` forced refresh, second `401`, `QUOTA_EXCEEDED`, valid/invalid `Retry-After`, mixed `401 → 429 → 500 → 200`, timeout, network errors, `500/502/503`, `403`, and malformed JSON. Use injected fake `fetch`, `sleep`, and token provider; assert literal waits `[250, 1000]` or capped retry seconds.
 
@@ -215,13 +215,13 @@ const api = new SpotifyWebApi({
 });
 ```
 
-- [ ] **Step 2: Run request-policy tests and verify RED**
+- [x] **Step 2: Run request-policy tests and verify RED**
 
 Run: `pnpm test src/lib/spotify/web-api.test.ts`
 
 Expected: FAIL because the client modules do not exist.
 
-- [ ] **Step 3: Implement schemas and the four-attempt state machine**
+- [x] **Step 3: Implement schemas and the four-attempt state machine**
 
 Use Zod schemas that accept documented nullable playlist fields but require correctness-critical IDs and URIs. Implement one loop with these counters:
 
@@ -238,21 +238,21 @@ while (attempts < 4) {
 
 Never log or surface response bodies. Map errors only to approved `AppError` codes.
 
-- [ ] **Step 4: Write failing pagination and mutation tests**
+- [x] **Step 4: Write failing pagination and mutation tests**
 
 Test 50-item saved pages, 50-item playlist pages, playlist-item pages, short final pages, validated totals, repeated/no-progress offsets, private creation via `POST /me/playlists`, and an add body `{ uris }` with at most 100 items.
 
-- [ ] **Step 5: Implement validated offset pagination and operations**
+- [x] **Step 5: Implement validated offset pagination and operations**
 
 Expose async methods returning complete arrays. Generate each next request from the validated page values rather than response `next` URLs. Reject negative totals, repeated offsets, and non-empty no-progress pages with `SPOTIFY_RESPONSE_INVALID`.
 
-- [ ] **Step 6: Verify Task 2 GREEN**
+- [x] **Step 6: Verify Task 2 GREEN**
 
 Run: `pnpm test src/lib/spotify/web-api.test.ts`
 
 Expected: all request, schema, pagination, and mutation tests PASS.
 
-- [ ] **Step 7: Commit Task 2**
+- [x] **Step 7: Commit Task 2**
 
 ```bash
 git add src/lib/spotify/web-api-types.ts src/lib/spotify/web-api.ts src/lib/spotify/web-api.test.ts
@@ -273,7 +273,7 @@ git commit -m "feat: add bounded spotify web api client"
 - Produces: `normalizeLibrary(items): { total; unsupported; tracks }`.
 - Produces: `fingerprintTrack(track): string` and `classifyTrack(track): TrackClassification`.
 
-- [ ] **Step 1: Write failing normalization and fingerprint tests**
+- [x] **Step 1: Write failing normalization and fingerprint tests**
 
 Use literal fixtures for supported tracks, duplicate IDs, null items, local tracks, missing IDs/URIs, episodes, Unicode accents, whitespace, release years, ordered artists, and changed metadata.
 
@@ -283,13 +283,13 @@ expect(normalizeLibrary([supported, supported]).tracks).toHaveLength(1);
 expect(fingerprintTrack(track)).toMatch(/^[a-f0-9]{64}$/);
 ```
 
-- [ ] **Step 2: Run normalization tests and verify RED**
+- [x] **Step 2: Run normalization tests and verify RED**
 
 Run: `pnpm test src/lib/sorting/normalize.test.ts`
 
 Expected: FAIL because the sorting domain does not exist.
 
-- [ ] **Step 3: Implement canonical normalization and SHA-256 fingerprinting**
+- [x] **Step 3: Implement canonical normalization and SHA-256 fingerprinting**
 
 Define:
 
@@ -338,11 +338,11 @@ export type GeneratedPlaylist = {
 
 Fingerprint the exact canonical array from the spec using `createHash("sha256")` and JSON arrays only.
 
-- [ ] **Step 4: Write failing classifier tests**
+- [x] **Step 4: Write failing classifier tests**
 
 Test each mood, whole-token/phrase matching, field weights 3/2/1, once-per-field scoring, fixed tie order, accent normalization, `lofi` and `lo-fi`, stable fallback, and a changed primary artist changing the fallback.
 
-- [ ] **Step 5: Implement exact keyword scoring and fallback**
+- [x] **Step 5: Implement exact keyword scoring and fallback**
 
 Export:
 
@@ -353,13 +353,13 @@ export function classifyTrack(track: NormalizedTrack): TrackClassification;
 
 Reasons must list only winning terms/fields, or exactly `Stable metadata fallback.`. The fallback hashes `metadata-v1:<track-id>:<primary-artist-id-or-empty>` and uses the first eight hex digits modulo five.
 
-- [ ] **Step 6: Verify Task 3 GREEN**
+- [x] **Step 6: Verify Task 3 GREEN**
 
 Run: `pnpm test src/lib/sorting/normalize.test.ts src/lib/sorting/classifier.test.ts`
 
 Expected: all normalization, fingerprint, and classifier tests PASS.
 
-- [ ] **Step 7: Commit Task 3**
+- [x] **Step 7: Commit Task 3**
 
 ```bash
 git add src/lib/sorting
@@ -376,7 +376,7 @@ git commit -m "feat: classify normalized tracks by mood"
 - Consumes: `Mood` and playlist summaries.
 - Produces: `managedPlaylistMetadata(mood)`, `resolveManagedPlaylist(input)`, `missingUris(desired, existing)`, and `batchUris(uris)`.
 
-- [ ] **Step 1: Write failing playlist-domain tests**
+- [x] **Step 1: Write failing playlist-domain tests**
 
 Test exact names/descriptions, stored-mapping authority, owner mismatch, `public: true`, `public: null`, absent privacy, exact recovery marker, unrelated same-name playlists, lexicographic tie selection, stable URI order, existing URI removal, duplicate desired URIs, empty batches, and 100/101 boundaries.
 
@@ -388,13 +388,13 @@ expect(managedPlaylistMetadata("chill")).toEqual({
 });
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `pnpm test src/lib/sorting/playlists.test.ts`
 
 Expected: FAIL because playlist domain functions do not exist.
 
-- [ ] **Step 3: Implement pure playlist functions**
+- [x] **Step 3: Implement pure playlist functions**
 
 Return a discriminated result from resolution:
 
@@ -407,13 +407,13 @@ type PlaylistResolution =
 
 Only `public === false` is valid. De-duplicate desired URIs before difference calculation and return batches in encounter order.
 
-- [ ] **Step 4: Verify Task 4 GREEN**
+- [x] **Step 4: Verify Task 4 GREEN**
 
 Run: `pnpm test src/lib/sorting/playlists.test.ts`
 
 Expected: all playlist-domain tests PASS.
 
-- [ ] **Step 5: Commit Task 4**
+- [x] **Step 5: Commit Task 4**
 
 ```bash
 git add src/lib/sorting/playlists.ts src/lib/sorting/playlists.test.ts
@@ -436,7 +436,7 @@ git commit -m "feat: resolve private managed playlists"
 - Consumes: Task 1 schema and Task 3 domain types.
 - Produces: lease acquisition result `{ id, userId, leaseToken, startedAt }`.
 
-- [ ] **Step 1: Write failing in-memory repository contract tests**
+- [x] **Step 1: Write failing in-memory repository contract tests**
 
 Define and test these interfaces:
 
@@ -462,25 +462,25 @@ export interface SyncRunRepository {
 
 Test classification replacement for the same user/track/version, mapping replacement for one user/mood, fresh conflict, exactly-15-minute stale replacement, wrong lease rejection, conditional terminal update, and latest ordering.
 
-- [ ] **Step 2: Run memory tests and verify RED**
+- [x] **Step 2: Run memory tests and verify RED**
 
 Run: `pnpm test src/lib/sync/classification-repository.test.ts src/lib/sync/playlist-repository.test.ts src/lib/sync/run-repository.test.ts`
 
 Expected: FAIL because repository modules do not exist.
 
-- [ ] **Step 3: Implement memory repositories**
+- [x] **Step 3: Implement memory repositories**
 
 Use injected `randomUUID` for deterministic lease tests. Throw `AppError("SYNC_ALREADY_RUNNING")` for a fresh lease and `AppError("SYNC_INTERRUPTED")` when an old lease attempts to mutate after replacement.
 
-- [ ] **Step 4: Write failing PostgreSQL contract tests**
+- [x] **Step 4: Write failing PostgreSQL contract tests**
 
 Test fingerprint/version reuse, playlist replacement, unique running-row enforcement under `Promise.allSettled`, stale-row failure fields, lease assertions, conditional terminal writes, and latest-run ordering. Use per-test UUID users and delete them in `afterEach`.
 
-- [ ] **Step 5: Implement Drizzle repositories**
+- [x] **Step 5: Implement Drizzle repositories**
 
 Acquire inside a short transaction. Lock the current running row before comparing `startedAt`, mark a stale row failed, then insert the new lease. Translate partial-index conflicts to `SYNC_ALREADY_RUNNING`. Terminal updates must include ID, lease token, and `running` status in the `WHERE` clause and reject zero updated rows.
 
-- [ ] **Step 6: Verify Task 5 GREEN**
+- [x] **Step 6: Verify Task 5 GREEN**
 
 Run:
 
@@ -491,7 +491,7 @@ pnpm test:integration
 
 Expected: all memory and PostgreSQL repository tests PASS.
 
-- [ ] **Step 7: Commit Task 5**
+- [x] **Step 7: Commit Task 5**
 
 ```bash
 git add src/lib/sync/*repository* tests/integration/sync-repositories.test.ts
@@ -510,7 +510,7 @@ git commit -m "feat: persist sorting state and sync leases"
 - Consumes: `SpotifyWebApi`, the three repositories, Task 3 classifier, and Task 4 playlist functions.
 - Produces: `syncLibrary({ userId, spotifyUserId }): Promise<SyncResult>` and `loadLatestSyncResult(userId): Promise<SyncResult | null>`.
 
-- [ ] **Step 1: Write the successful first-run service test**
+- [x] **Step 1: Write the successful first-run service test**
 
 Use complete in-memory fakes for all Spotify methods. Feed multiple saved pages through the real normalized item shape, assert five private creations in mood order, sequential add calls, persisted mappings, succeeded counts, and five result links.
 
@@ -530,21 +530,21 @@ export type SyncServiceDependencies = {
 export type SyncInput = { userId: string; spotifyUserId: string };
 ```
 
-- [ ] **Step 2: Run first-run test and verify RED**
+- [x] **Step 2: Run first-run test and verify RED**
 
 Run: `pnpm test src/lib/sync/service.test.ts`
 
 Expected: FAIL because `syncLibrary` does not exist.
 
-- [ ] **Step 3: Implement the minimum successful orchestration**
+- [x] **Step 3: Implement the minimum successful orchestration**
 
 Acquire a lease; fetch saved tracks; normalize/de-duplicate; reuse matching classifications; fetch current playlists once; resolve/create five destinations; fetch destination items; difference and batch; assert the lease immediately before each create/add; persist success. Never hold a DB transaction around any Spotify call.
 
-- [ ] **Step 4: Add idempotency, changed metadata, and recovery tests**
+- [x] **Step 4: Add idempotency, changed metadata, and recovery tests**
 
 Test a second identical run creates/adds nothing, changed fingerprint recomputes only that track, stale mapping recovers the exact private owned marker, a public stored mapping is replaced, and unrelated same-name playlists are untouched.
 
-- [ ] **Step 5: Add partial-failure and stale-resume tests**
+- [x] **Step 5: Add partial-failure and stale-resume tests**
 
 Test a mood-1 batch failure after one successful batch; verify all later-mood tracks become failed and:
 
@@ -555,17 +555,17 @@ expect(counts.added + counts.skipped + (counts.failed - unsupportedCount))
 
 Pause an old service before its next add, replace the 15-minute lease, resume it, and assert there is no later Spotify mutation or terminal overwrite.
 
-- [ ] **Step 6: Implement terminal accounting and safe result serialization**
+- [x] **Step 6: Implement terminal accounting and safe result serialization**
 
 On any terminal error after acquisition, calculate unconfirmed supported tracks across every mood, add unsupported occurrences, store a safe code/message, and return known mappings. Serialize playlists in fixed mood order and construct URLs only as `https://open.spotify.com/playlist/${validatedId}`.
 
-- [ ] **Step 7: Verify Task 6 GREEN**
+- [x] **Step 7: Verify Task 6 GREEN**
 
 Run: `pnpm test src/lib/sync/service.test.ts src/lib/sync/result.test.ts`
 
 Expected: all success, idempotency, recovery, partial failure, and lease-fencing tests PASS.
 
-- [ ] **Step 8: Commit Task 6**
+- [x] **Step 8: Commit Task 6**
 
 ```bash
 git add src/lib/sync/service.ts src/lib/sync/service.test.ts src/lib/sync/result.ts src/lib/sync/result.test.ts
@@ -587,7 +587,7 @@ git commit -m "feat: synchronize mood playlists idempotently"
 - Consumes: current account resolution, Task 1 token service, Task 2 client, Task 5 repositories, Task 6 service.
 - Produces: POST and GET route handlers with the approved JSON/status contract.
 
-- [ ] **Step 1: Write failing dependency-injected handler tests**
+- [x] **Step 1: Write failing dependency-injected handler tests**
 
 Test unauthenticated 401, successful 200, fresh-run 409, rate-limit 429, terminal Spotify failure 502 with persisted `run` and known `playlists`, unexpected 500, and latest no-run `{ run: null, playlists: [] }`.
 
@@ -600,31 +600,31 @@ const handlers = createSyncHandlers({
 });
 ```
 
-- [ ] **Step 2: Run handler tests and verify RED**
+- [x] **Step 2: Run handler tests and verify RED**
 
 Run: `pnpm test src/lib/sync/handlers.test.ts`
 
 Expected: FAIL because handlers do not exist.
 
-- [ ] **Step 3: Implement safe HTTP translation**
+- [x] **Step 3: Implement safe HTTP translation**
 
 Use exact public messages from the design. Never serialize caught exception messages. On `AUTH_REQUIRED`, invoke the injected session clearer. Include failed run payload only when the service acquired and persisted a run.
 
-- [ ] **Step 4: Write failing route wiring tests**
+- [x] **Step 4: Write failing route wiring tests**
 
 Mock only production dependency factories; prove `POST` and `GET` delegate to the injected handler contract and retain authorization/status mapping.
 
-- [ ] **Step 5: Add production route wiring**
+- [x] **Step 5: Add production route wiring**
 
 Build one `SpotifyWebApi` per request with an access-token provider that calls `getValidSpotifyAccessToken({ forceRefresh })`. Construct Drizzle repositories and pass an injected clock. Export only `POST` or `GET` from each App Router module.
 
-- [ ] **Step 6: Verify Task 7 GREEN**
+- [x] **Step 6: Verify Task 7 GREEN**
 
 Run: `pnpm test src/lib/sync/handlers.test.ts src/app/api/sync/route.test.ts src/app/api/sync/latest/route.test.ts`
 
 Expected: all handler and route tests PASS.
 
-- [ ] **Step 7: Commit Task 7**
+- [x] **Step 7: Commit Task 7**
 
 ```bash
 git add src/lib/sync/handlers.ts src/lib/sync/handlers.test.ts src/app/api/sync src/lib/auth/session.ts
@@ -645,7 +645,7 @@ git commit -m "feat: expose spotify sorting api"
 - Consumes: `SyncResult | null` as `initialResult` and POST `/api/sync`.
 - Produces: accessible pending, succeeded, failed, 409, and 401 states.
 
-- [ ] **Step 1: Write failing component tests**
+- [x] **Step 1: Write failing component tests**
 
 Cover initial enabled action, pending disabled state and live status, success counts and five links, safe failure with retry, preserved prior links, 409 message, and 401 login link. Use a controlled deferred `fetch` promise for pending behavior rather than timers.
 
@@ -656,25 +656,25 @@ Cover initial enabled action, pending disabled state and live status, success co
 />
 ```
 
-- [ ] **Step 2: Run component tests and verify RED**
+- [x] **Step 2: Run component tests and verify RED**
 
 Run: `pnpm test src/components/dashboard.test.tsx`
 
 Expected: FAIL because the button is disabled and result states do not exist.
 
-- [ ] **Step 3: Implement the client dashboard**
+- [x] **Step 3: Implement the client dashboard**
 
 Add `"use client"`, submit with `fetch("/api/sync", { method: "POST" })`, and maintain `idle | pending | succeeded | failed` state. Use `aria-live="polite"`, disabled pending button, fixed mood cards, literal count labels, secure external links with `target="_blank" rel="noreferrer"`, and retry without clearing prior playlist links.
 
-- [ ] **Step 4: Load the persisted result on the server page**
+- [x] **Step 4: Load the persisted result on the server page**
 
 After authenticating, query `loadLatestSyncResult(account.userId)` through the Drizzle repositories and pass the result to `Dashboard`. Keep the unauthenticated redirect unchanged.
 
-- [ ] **Step 5: Write browser tests and verify RED**
+- [x] **Step 5: Write browser tests and verify RED**
 
 Intercept `/api/sync` in Playwright for a deferred pending response, success payload, safe failure then retry success, and persisted initial result after page reload. Do not add a production authentication bypass or Spotify write.
 
-- [ ] **Step 6: Complete browser behavior and verify GREEN**
+- [x] **Step 6: Complete browser behavior and verify GREEN**
 
 Run:
 
@@ -685,7 +685,7 @@ pnpm test:e2e
 
 Expected: component tests and all Chromium tests PASS.
 
-- [ ] **Step 7: Commit Task 8**
+- [x] **Step 7: Commit Task 8**
 
 ```bash
 git add src/components/dashboard.tsx src/components/dashboard.test.tsx src/app/dashboard tests/e2e
@@ -704,15 +704,15 @@ git commit -m "feat: add sort my music dashboard flow"
 - Consumes every preceding task.
 - Produces a developer-verifiable workflow and final evidence package.
 
-- [ ] **Step 1: Add README behavior and safety documentation**
+- [x] **Step 1: Add README behavior and safety documentation**
 
 Document the exact five playlists, deterministic metadata classifier, repeat-run idempotency, synchronous request expectation, safe partial-failure retry, and the complete local verification commands. Do not promise Audio Features, background jobs, removals, or live-test writes.
 
-- [ ] **Step 2: Run migration against a fresh PostgreSQL 17 database**
+- [x] **Step 2: Run migration against a fresh PostgreSQL 17 database**
 
 Create an explicitly named disposable database container, run `pnpm db:migrate`, inspect that both migrations are recorded, and verify the running-row partial index exists.
 
-- [ ] **Step 3: Run the complete local suite**
+- [x] **Step 3: Run the complete local suite**
 
 Run with CI-equivalent environment values and pnpm 10.34.5:
 
@@ -734,7 +734,7 @@ Expected: every command exits 0; report exact unit, integration, and browser tes
 
 Run the incremental Graphify pipeline, validate `graph.json`, regenerate `GRAPH_REPORT.md` and `graph.html`, report graph diff and benchmark, and ensure only ignored graph artifacts changed.
 
-- [ ] **Step 5: Run independent high-effort review**
+- [x] **Step 5: Run independent high-effort review**
 
 Give the reviewer the approved spec, this plan, complete diff, migration, and test outputs. Require findings ordered by severity and exact file/line references. Resolve every actionable finding with a failing regression test before changing production code.
 

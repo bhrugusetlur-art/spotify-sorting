@@ -27,6 +27,7 @@ export type ActiveSyncRun = Pick<SyncRun, "id" | "userId" | "startedAt"> & { lea
 export interface SyncRunRepository {
   acquire(userId: string, now: Date): Promise<ActiveSyncRun>;
   assertActiveLease(runId: string, leaseToken: string): Promise<void>;
+  withActiveLease?<T>(runId: string, leaseToken: string, operation: () => T): Promise<T>;
   succeed(runId: string, leaseToken: string, counts: SyncCounts, completedAt: Date): Promise<SyncRun>;
   fail(runId: string, leaseToken: string, counts: SyncCounts, failure: SafeFailure, completedAt: Date): Promise<SyncRun>;
   latest(userId: string): Promise<SyncRun | null>;
@@ -61,6 +62,11 @@ export function createMemorySyncRunRepository(dependencies: { randomUUID?: () =>
     async assertActiveLease(runId, leaseToken) {
       const run = values.get(runId);
       if (run?.status !== "running" || run.leaseToken !== leaseToken) throw new AppError("SYNC_INTERRUPTED");
+    },
+    async withActiveLease(runId, leaseToken, operation) {
+      const run = values.get(runId);
+      if (run?.status !== "running" || run.leaseToken !== leaseToken) throw new AppError("SYNC_INTERRUPTED");
+      return operation();
     },
     async succeed(runId, leaseToken, counts, completedAt) {
       return complete(values, runId, leaseToken, counts, null, completedAt);

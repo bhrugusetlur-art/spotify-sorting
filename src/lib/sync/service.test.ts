@@ -170,7 +170,13 @@ describe("sync service", () => {
     };
     const dependencies = memoryDependencies(spotify);
     dependencies.runs = runs;
-    dependencies.playlists = createMemoryGeneratedPlaylistRepository({ assertActiveLease: (id, token) => base.assertActiveLease(id, token) });
+    dependencies.playlists = createMemoryGeneratedPlaylistRepository({
+      withActiveLease: (id, token, operation) => {
+        const fenced = base.withActiveLease;
+        if (!fenced) throw new Error("memory sync runs must support atomic lease fencing");
+        return fenced(id, token, operation);
+      },
+    });
     const service = createSyncService(dependencies);
 
     const oldRun = service.syncLibrary({ userId, spotifyUserId });
@@ -205,7 +211,13 @@ function memoryDependencies(spotify: FakeSpotify) {
   return {
     spotify,
     classifications: createMemoryClassificationRepository(),
-    playlists: createMemoryGeneratedPlaylistRepository({ assertActiveLease: (id, token) => runs.assertActiveLease(id, token) }),
+    playlists: createMemoryGeneratedPlaylistRepository({
+      withActiveLease: (id, token, operation) => {
+        const fenced = runs.withActiveLease;
+        if (!fenced) throw new Error("memory sync runs must support atomic lease fencing");
+        return fenced(id, token, operation);
+      },
+    }),
     runs,
     now: () => new Date(now),
   };

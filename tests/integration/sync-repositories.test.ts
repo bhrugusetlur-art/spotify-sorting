@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
+import postgres from "postgres";
 import { createDrizzleClassificationRepository } from "@/lib/sync/classification-repository";
 import { createDrizzleGeneratedPlaylistRepository } from "@/lib/sync/playlist-repository";
 import { createDrizzleSyncRunRepository } from "@/lib/sync/run-repository";
@@ -88,6 +89,49 @@ describe("Drizzle sorting repositories", () => {
     ]);
   });
 
+  it("serializes a blocked mapping write with replacement acquisition", async () => {
+    const userId = await createUser();
+    const repository = createDrizzleGeneratedPlaylistRepository();
+    const runs = createDrizzleSyncRunRepository();
+    const old = await runs.acquire(userId, new Date("2026-08-03T12:00:00.000Z"));
+    await repository.upsert({ userId, mood: "chill", spotifyPlaylistId: "playlist-original", playlistName: "Mood Sorter — Chill" }, old);
+    const databaseUrl = process.env.DATABASE_URL;
+    if (!databaseUrl) throw new Error("integration database is required");
+    const locker = postgres(databaseUrl, { prepare: false });
+    const probe = postgres(databaseUrl, { prepare: false });
+    const locked = deferred<void>();
+    const release = deferred<void>();
+    const block = locker.begin(async (tx) => {
+      await tx`select id from generated_playlists where user_id = ${userId} and mood = 'chill' for update`;
+      locked.resolve();
+      await release.promise;
+    });
+
+    try {
+      await locked.promise;
+      const stale = repository.upsert({ userId, mood: "chill", spotifyPlaylistId: "playlist-stale", playlistName: "Mood Sorter — Chill" }, old);
+      await waitForMappingLock(probe);
+      const replacement = runs.acquire(userId, new Date("2026-08-03T12:15:00.000Z"));
+      let replacementSettled = false;
+      void replacement.then(() => { replacementSettled = true; });
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      expect(replacementSettled).toBe(false);
+
+      release.resolve();
+      await block;
+      await stale;
+      const fresh = await replacement;
+      await repository.upsert({ userId, mood: "chill", spotifyPlaylistId: "playlist-fresh", playlistName: "Mood Sorter — Chill" }, fresh);
+      await expect(repository.list(userId)).resolves.toEqual([
+        { userId, mood: "chill", spotifyPlaylistId: "playlist-fresh", playlistName: "Mood Sorter — Chill" },
+      ]);
+    } finally {
+      release.resolve();
+      await block.catch(() => undefined);
+      await Promise.all([locker.end({ timeout: 5 }), probe.end({ timeout: 5 })]);
+    }
+  });
+
   it("allows only one running lease when acquisitions race", async () => {
     const userId = await createUser();
     const repository = createDrizzleSyncRunRepository();
@@ -142,3 +186,24 @@ describe("Drizzle sorting repositories", () => {
     await expect(repository.latest(userId)).resolves.toMatchObject({ id: second.id, status: "running", startedAt: new Date("2026-08-03T12:02:00.000Z") });
   });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((next) => { resolve = next; });
+  return { promise, resolve };
+}
+
+async function waitForMappingLock(probe: ReturnType<typeof postgres>): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const [row] = await probe<{ waiting: number }[]>`
+      select count(*)::int as waiting
+      from pg_stat_activity
+      where datname = current_database()
+        and wait_event_type = 'Lock'
+        and query like '%generated_playlists%'
+    `;
+    if (row?.waiting) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("mapping write did not block on the row lock");
+}

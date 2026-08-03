@@ -1,8 +1,8 @@
 import "server-only";
-import { eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { AppError } from "@/lib/errors";
 import { getDb } from "@/lib/db/client";
-import { generatedPlaylists } from "@/lib/db/schema";
+import { generatedPlaylists, syncRuns } from "@/lib/db/schema";
 import { MOODS, type GeneratedPlaylist, type Mood } from "@/lib/sorting/types";
 import type { ActiveSyncRun } from "./run-repository";
 
@@ -12,7 +12,7 @@ export interface GeneratedPlaylistRepository {
 }
 
 export function createMemoryGeneratedPlaylistRepository(dependencies: {
-  assertActiveLease: (runId: string, leaseToken: string) => Promise<void>;
+  withActiveLease: <T>(runId: string, leaseToken: string, operation: () => T) => Promise<T>;
 }): GeneratedPlaylistRepository {
   const values = new Map<string, GeneratedPlaylist>();
 
@@ -21,10 +21,11 @@ export function createMemoryGeneratedPlaylistRepository(dependencies: {
       return sortPlaylists([...values.values()].filter((value) => value.userId === userId));
     },
     async upsert(input, lease) {
-      await dependencies.assertActiveLease(lease.id, lease.leaseToken);
-      const value = { ...input };
-      values.set(key(input.userId, input.mood), value);
-      return { ...value };
+      return dependencies.withActiveLease(lease.id, lease.leaseToken, () => {
+        const value = { ...input };
+        values.set(key(input.userId, input.mood), value);
+        return { ...value };
+      });
     },
   };
 }
@@ -41,32 +42,28 @@ export function createDrizzleGeneratedPlaylistRepository(db = getDb()): Generate
       })));
     },
     async upsert(input, lease) {
-      const rows = await db.execute<{
-        user_id: string;
-        mood: Mood;
-        spotify_playlist_id: string;
-        playlist_name: string;
-      }>(sql`
-        insert into generated_playlists (user_id, mood, spotify_playlist_id, playlist_name)
-        select ${input.userId}, ${input.mood}, ${input.spotifyPlaylistId}, ${input.playlistName}
-        where exists (
-          select 1 from sync_runs
-          where id = ${lease.id} and lease_token = ${lease.leaseToken} and status = 'running'
-        )
-        on conflict (user_id, mood) do update set
-          spotify_playlist_id = excluded.spotify_playlist_id,
-          playlist_name = excluded.playlist_name,
-          updated_at = now()
-        returning user_id, mood, spotify_playlist_id, playlist_name
-      `);
-      const row = rows[0];
-      if (row === undefined) throw new AppError("SYNC_INTERRUPTED");
-      return {
-        userId: row.user_id,
-        mood: row.mood,
-        spotifyPlaylistId: row.spotify_playlist_id,
-        playlistName: row.playlist_name,
-      };
+      return db.transaction(async (tx) => {
+        const [active] = await tx.select({ id: syncRuns.id }).from(syncRuns).where(and(
+          eq(syncRuns.id, lease.id),
+          eq(syncRuns.leaseToken, lease.leaseToken),
+          eq(syncRuns.status, "running"),
+        )).for("update").limit(1);
+        if (active === undefined) throw new AppError("SYNC_INTERRUPTED");
+        const [row] = await tx.insert(generatedPlaylists).values(input).onConflictDoUpdate({
+          target: [generatedPlaylists.userId, generatedPlaylists.mood],
+          set: {
+            spotifyPlaylistId: input.spotifyPlaylistId,
+            playlistName: input.playlistName,
+            updatedAt: new Date(),
+          },
+        }).returning();
+        return {
+          userId: row.userId,
+          mood: row.mood,
+          spotifyPlaylistId: row.spotifyPlaylistId,
+          playlistName: row.playlistName,
+        };
+      });
     },
   };
 }

@@ -4,10 +4,10 @@ import { AppError } from "@/lib/errors";
 
 const scopes = ["user-library-read", "playlist-read-private", "playlist-modify-private", "playlist-modify-public"] as const;
 const tokenSchema = z.object({ access_token: z.string(), refresh_token: z.string().optional(), expires_in: z.number(), scope: z.string().optional().default(""), token_type: z.literal("Bearer") });
-const profileSchema = z.object({ id: z.string(), display_name: z.string().nullable(), images: z.array(z.object({ url: z.string().url() })).default([]) });
+const profileSchema = z.object({ account_id: z.string(), id: z.string(), display_name: z.string().nullable(), images: z.array(z.object({ url: z.string().url() })).default([]) });
 
 export type SpotifyTokenResponse = { accessToken: string; refreshToken?: string; expiresIn: number; scope: string };
-export type SpotifyProfile = { id: string; displayName: string | null; imageUrl: string | null };
+export type SpotifyProfile = { accountId: string; id: string; displayName: string | null; imageUrl: string | null };
 
 function spotifyFailure(response: Response): AppError {
   return new AppError(response.status === 429 ? "SPOTIFY_RATE_LIMITED" : "SPOTIFY_UNAVAILABLE");
@@ -18,7 +18,7 @@ async function spotifyJson<T>(response: Response, schema: z.ZodType<T>): Promise
   try {
     return schema.parse(await response.json());
   } catch {
-    throw new AppError("SPOTIFY_UNAVAILABLE");
+    throw new AppError("SPOTIFY_RESPONSE_INVALID");
   }
 }
 
@@ -56,6 +56,6 @@ export class SpotifyOAuthClient {
   async profile(accessToken: string): Promise<SpotifyProfile> {
     const response = await this.request(["https://api.spotify.com/v1/me", { headers: { authorization: `Bearer ${accessToken}` } }]);
     const value = await spotifyJson(response, profileSchema);
-    return { id: value.id, displayName: value.display_name, imageUrl: value.images[0]?.url ?? null };
+    return { accountId: value.account_id, id: value.id, displayName: value.display_name, imageUrl: value.images[0]?.url ?? null };
   }
 }

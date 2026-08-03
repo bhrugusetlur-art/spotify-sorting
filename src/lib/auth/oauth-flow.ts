@@ -23,6 +23,7 @@ export async function completeSpotifyLogin(input: {
 
   const profile = await input.spotify.profile(tokens.accessToken);
   return input.repository.upsert({
+    spotifyAccountId: profile.accountId,
     spotifyUserId: profile.id,
     displayName: profile.displayName,
     imageUrl: profile.imageUrl,

@@ -1,4 +1,5 @@
-import { integer, pgEnum, pgTable, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { index, integer, pgEnum, pgTable, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 export const moodValues = ["chill", "hype", "focus", "sad", "happy"] as const;
 export const mood = pgEnum("mood", moodValues);
@@ -6,6 +7,7 @@ export const syncStatus = pgEnum("sync_status", ["running", "succeeded", "failed
 
 export const users = pgTable("users", {
   id: uuid("id").defaultRandom().primaryKey(),
+  spotifyAccountId: text("spotify_account_id").unique(),
   spotifyUserId: text("spotify_user_id").notNull().unique(),
   displayName: text("display_name"),
   imageUrl: text("image_url"),
@@ -64,19 +66,29 @@ export const songClassifications = pgTable(
   ],
 );
 
-export const syncRuns = pgTable("sync_runs", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  status: syncStatus("status").notNull(),
-  totalCount: integer("total_count").default(0).notNull(),
-  classifiedCount: integer("classified_count").default(0).notNull(),
-  addedCount: integer("added_count").default(0).notNull(),
-  skippedCount: integer("skipped_count").default(0).notNull(),
-  failedCount: integer("failed_count").default(0).notNull(),
-  failureCode: text("failure_code"),
-  failureMessage: text("failure_message"),
-  startedAt: timestamp("started_at", { withTimezone: true }).defaultNow().notNull(),
-  completedAt: timestamp("completed_at", { withTimezone: true }),
-});
+export const syncRuns = pgTable(
+  "sync_runs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    leaseToken: uuid("lease_token"),
+    status: syncStatus("status").notNull(),
+    totalCount: integer("total_count").default(0).notNull(),
+    classifiedCount: integer("classified_count").default(0).notNull(),
+    addedCount: integer("added_count").default(0).notNull(),
+    skippedCount: integer("skipped_count").default(0).notNull(),
+    failedCount: integer("failed_count").default(0).notNull(),
+    failureCode: text("failure_code"),
+    failureMessage: text("failure_message"),
+    startedAt: timestamp("started_at", { withTimezone: true }).defaultNow().notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("sync_runs_one_running_per_user")
+      .on(table.userId)
+      .where(sql`${table.status} = 'running'`),
+    index("sync_runs_user_started_at_idx").on(table.userId, table.startedAt),
+  ],
+);

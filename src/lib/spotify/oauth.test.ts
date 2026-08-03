@@ -35,18 +35,38 @@ describe("SpotifyOAuthClient", () => {
     expect(body.get("grant_type")).toBe("refresh_token");
   });
 
+  it("maps Spotify's stable account identity from a profile", async () => {
+    const client = new SpotifyOAuthClient({
+      clientId: "client",
+      redirectUri: "http://127.0.0.1/callback",
+      fetch: vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        account_id: "account-stable",
+        id: "public-user",
+        display_name: "Ada",
+        images: [],
+      }), { status: 200, headers: { "content-type": "application/json" } })),
+    });
+
+    expect(await client.profile("access")).toEqual({
+      accountId: "account-stable",
+      id: "public-user",
+      displayName: "Ada",
+      imageUrl: null,
+    });
+  });
+
   it("maps Spotify rate limits to a safe application error", async () => {
     const client = new SpotifyOAuthClient({ clientId: "client", redirectUri: "http://127.0.0.1/callback", fetch: vi.fn().mockResolvedValue(new Response(null, { status: 429 })) });
     await expect(client.exchangeCode("code", "verifier")).rejects.toMatchObject({ code: "SPOTIFY_RATE_LIMITED" });
   });
 
-  it("maps malformed Spotify payloads to a safe application error", async () => {
+  it("maps malformed Spotify payloads to the response-invalid error", async () => {
     const client = new SpotifyOAuthClient({
       clientId: "client",
       redirectUri: "http://127.0.0.1/callback",
       fetch: vi.fn().mockResolvedValue(new Response("not-json", { status: 200 })),
     });
-    await expect(client.exchangeCode("code", "verifier")).rejects.toMatchObject({ code: "SPOTIFY_UNAVAILABLE" });
+    await expect(client.exchangeCode("code", "verifier")).rejects.toMatchObject({ code: "SPOTIFY_RESPONSE_INVALID" });
   });
 
   it("maps Spotify transport failures to a safe application error", async () => {

@@ -201,6 +201,44 @@ describe("SpotifyWebApi pagination and mutations", () => {
     await expect(api.savedTracks()).rejects.toMatchObject({ code: "SPOTIFY_RESPONSE_INVALID" });
   });
 
+  it("rejects a present saved track with an empty id", async () => {
+    const { api } = client([response(savedPage({ items: [{
+      added_at: "2024-01-01T00:00:00Z",
+      track: {
+        type: "track",
+        id: "",
+        uri: "spotify:track:track-1",
+        name: "Track",
+        artists: [{ id: "artist-1", name: "Artist" }],
+        album: { id: "album-1", name: "Album", release_date: "2024-01-01" },
+        duration_ms: 180_000,
+        explicit: false,
+        is_local: false,
+      },
+    }] }))]);
+
+    await expect(api.savedTracks()).rejects.toMatchObject({ code: "SPOTIFY_RESPONSE_INVALID" });
+  });
+
+  it("rejects a present saved track with an empty uri", async () => {
+    const { api } = client([response(savedPage({ items: [{
+      added_at: "2024-01-01T00:00:00Z",
+      track: {
+        type: "track",
+        id: "track-1",
+        uri: "",
+        name: "Track",
+        artists: [{ id: "artist-1", name: "Artist" }],
+        album: { id: "album-1", name: "Album", release_date: "2024-01-01" },
+        duration_ms: 180_000,
+        explicit: false,
+        is_local: false,
+      },
+    }] }))]);
+
+    await expect(api.savedTracks()).rejects.toMatchObject({ code: "SPOTIFY_RESPONSE_INVALID" });
+  });
+
   it("fetches 50-item current-user playlist pages through the short final page", async () => {
     const first = Array.from({ length: 50 }, (_, index) => playlist(`playlist-${index}`));
     const { api } = client([response(playlistPage({ items: first, offset: 0, total: 51, next: "https://api.spotify.com/v1/me/playlists?offset=50" })), response(playlistPage({ items: [playlist("playlist-final")], offset: 50, total: 51 }))]);

@@ -22,8 +22,11 @@ const successfulResult = {
 test("an authenticated dashboard announces pending work and renders its successful sync", async ({ context, page }) => {
   const cleanup = await establishMockCallbackSession(context, { displayName: "Ada" });
   let releaseResponse!: () => void;
+  let signalRequestHeld!: () => void;
   const responseGate = new Promise<void>((resolve) => { releaseResponse = resolve; });
+  const requestHeld = new Promise<void>((resolve) => { signalRequestHeld = resolve; });
   await page.route("**/api/sync", async (route) => {
+    signalRequestHeld();
     await responseGate;
     await route.fulfill({ json: successfulResult });
   });
@@ -31,6 +34,7 @@ test("an authenticated dashboard announces pending work and renders its successf
   try {
     await page.goto("/dashboard");
     await page.getByRole("button", { name: "Sort My Music" }).click();
+    await requestHeld;
     await expect(page.getByRole("button", { name: "Sorting music…" })).toBeDisabled();
     await expect(page.getByRole("status")).toHaveText(/sorting your music/i);
 

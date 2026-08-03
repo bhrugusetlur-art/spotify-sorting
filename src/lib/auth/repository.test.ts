@@ -38,4 +38,14 @@ describe("linked account repository", () => {
     expect(relinked.userId).toBe(original.userId);
     expect(relinked.spotifyUserId).toBe("new-public-id");
   });
+
+  it("rejects moving an account onto another account's public user ID", async () => {
+    const repository = createMemoryAccountRepository();
+    const first = await repository.upsert(linkedInput({ spotifyAccountId: "account-a", spotifyUserId: "public-a" }));
+    const second = await repository.upsert(linkedInput({ spotifyAccountId: "account-b", spotifyUserId: "public-b" }));
+
+    await expect(repository.upsert(linkedInput({ spotifyAccountId: "account-a", spotifyUserId: "public-b" }))).rejects.toThrow();
+    await expect(repository.findByUserId(first.userId)).resolves.toMatchObject({ spotifyUserId: "public-a" });
+    await expect(repository.findByUserId(second.userId)).resolves.toMatchObject({ spotifyUserId: "public-b" });
+  });
 });

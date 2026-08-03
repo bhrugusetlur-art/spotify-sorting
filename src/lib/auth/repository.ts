@@ -27,7 +27,11 @@ export function createMemoryAccountRepository(): LinkedAccountRepository {
       const accountMatch = input.spotifyAccountId
         ? [...values.values()].find((value) => value.spotifyAccountId === input.spotifyAccountId)
         : undefined;
-      const existing = accountMatch ?? [...values.values()].find((value) => value.spotifyUserId === input.spotifyUserId);
+      const publicUserMatch = [...values.values()].find((value) => value.spotifyUserId === input.spotifyUserId);
+      if (accountMatch && publicUserMatch && accountMatch.userId !== publicUserMatch.userId) {
+        throw new Error("spotify_user_id must be unique");
+      }
+      const existing = accountMatch ?? publicUserMatch;
       const value = { ...input, userId: existing?.userId ?? `user-${values.size + 1}` };
       values.set(value.userId, value);
       return value;
@@ -94,7 +98,10 @@ async function reconcileAccount(tx: DbTransaction, input: LinkedAccountInput): P
 }
 
 function isUniqueConstraintViolation(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
+  if (typeof error !== "object" || error === null) return false;
+  if ("code" in error && error.code === "23505") return true;
+  return "cause" in error && typeof error.cause === "object" && error.cause !== null
+    && "code" in error.cause && error.cause.code === "23505";
 }
 
 export function createDrizzleAccountRepository(db = getDb()): LinkedAccountRepository {

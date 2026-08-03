@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
-import { inArray } from "drizzle-orm";
+import { inArray, sql } from "drizzle-orm";
 import { closeDb, getDb } from "@/lib/db/client";
 import { users } from "@/lib/db/schema";
 import { createDrizzleAccountRepository } from "@/lib/auth/repository";
@@ -11,6 +11,7 @@ const spotifyAccountIds = [
   `account-${identity}-legacy`,
   `account-${identity}-relink`,
   `account-${identity}-conflict`,
+  `account-${identity}-concurrent`,
 ];
 
 afterAll(async () => {
@@ -61,5 +62,39 @@ describe("Drizzle linked-account repository", () => {
     await db.insert(users).values({ spotifyAccountId: spotifyAccountIds[3], spotifyUserId: `spotify-${identity}-conflict-1`, displayName: "Ada" });
 
     await expect(db.insert(users).values({ spotifyAccountId: spotifyAccountIds[3], spotifyUserId: `spotify-${identity}-conflict-2`, displayName: "Grace" })).rejects.toMatchObject({ cause: { code: "23505" } });
+  });
+
+  it("reconciles concurrent callbacks to one account and persists the retrying callback's tokens", async () => {
+    const db = getDb();
+    const repository = createDrizzleAccountRepository();
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION delay_task1_concurrent_insert()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.display_name = 'Slow callback' THEN
+          PERFORM pg_sleep(0.2);
+        END IF;
+        RETURN NEW;
+      END;
+      $$;
+    `));
+    await db.execute(sql.raw("CREATE TRIGGER delay_task1_concurrent_insert BEFORE INSERT ON users FOR EACH ROW EXECUTE FUNCTION delay_task1_concurrent_insert();"));
+
+    try {
+      const [slow, fast] = await Promise.all([
+        repository.upsert({ spotifyAccountId: spotifyAccountIds[4], spotifyUserId: `spotify-${identity}-concurrent`, displayName: "Slow callback", imageUrl: null, encryptedAccessToken: "slow-access", encryptedRefreshToken: "slow-refresh", scopes: "user-library-read", accessTokenExpiresAt: new Date(10_000) }),
+        repository.upsert({ spotifyAccountId: spotifyAccountIds[4], spotifyUserId: `spotify-${identity}-concurrent`, displayName: "Fast callback", imageUrl: null, encryptedAccessToken: "fast-access", encryptedRefreshToken: "fast-refresh", scopes: "user-library-read", accessTokenExpiresAt: new Date(20_000) }),
+      ]);
+
+      expect(slow.userId).toBe(fast.userId);
+      await expect(repository.findByUserId(slow.userId)).resolves.toMatchObject({
+        encryptedAccessToken: "slow-access",
+        encryptedRefreshToken: "slow-refresh",
+        displayName: "Slow callback",
+      });
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER IF EXISTS delay_task1_concurrent_insert ON users;"));
+      await db.execute(sql.raw("DROP FUNCTION IF EXISTS delay_task1_concurrent_insert();"));
+    }
   });
 });

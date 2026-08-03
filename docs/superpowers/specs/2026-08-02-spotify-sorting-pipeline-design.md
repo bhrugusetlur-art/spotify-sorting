@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-02
 
-**Status:** Draft — approved conversationally, pending written review
+**Status:** Approved for implementation on 2026-08-03
 
 ## Purpose
 

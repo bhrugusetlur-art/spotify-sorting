@@ -10,6 +10,7 @@ test("a mocked successful callback session reaches the authenticated dashboard",
     for (const mood of ["Chill", "Hype", "Focus", "Sad", "Happy"]) {
       await expect(page.getByText(mood, { exact: true })).toBeVisible();
     }
+    await expect(page.getByRole("button", { name: "Sort My Music" })).toBeEnabled();
   } finally {
     await cleanup();
   }

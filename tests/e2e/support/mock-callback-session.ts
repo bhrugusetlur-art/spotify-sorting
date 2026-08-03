@@ -12,6 +12,13 @@ export async function establishMockCallbackSession(
   context: BrowserContext,
   input: { displayName: string },
 ): Promise<() => Promise<void>> {
+  return (await establishMockCallbackSessionWithUser(context, input)).cleanup;
+}
+
+export async function establishMockCallbackSessionWithUser(
+  context: BrowserContext,
+  input: { displayName: string },
+): Promise<{ cleanup: () => Promise<void>; userId: string }> {
   const databaseUrl = process.env.DATABASE_URL;
   const sessionSecret = process.env.SESSION_SECRET;
   if (!databaseUrl || !sessionSecret) throw new Error("E2E database and session configuration are required");
@@ -55,7 +62,7 @@ export async function establishMockCallbackSession(
       },
     ]);
 
-    return cleanup;
+    return { cleanup, userId };
   } catch (error) {
     await cleanup().catch(() => undefined);
     throw error;

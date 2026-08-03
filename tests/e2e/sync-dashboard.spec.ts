@@ -21,10 +21,16 @@ const successfulResult = {
 
 test("an authenticated dashboard announces pending work and renders its successful sync", async ({ context, page }) => {
   const cleanup = await establishMockCallbackSession(context, { displayName: "Ada" });
-  let releaseResponse!: () => void;
+  let resolveResponseGate!: () => void;
   let signalRequestHeld!: () => void;
-  const responseGate = new Promise<void>((resolve) => { releaseResponse = resolve; });
+  let responseReleased = false;
+  const responseGate = new Promise<void>((resolve) => { resolveResponseGate = resolve; });
   const requestHeld = new Promise<void>((resolve) => { signalRequestHeld = resolve; });
+  const releaseResponse = () => {
+    if (responseReleased) return;
+    responseReleased = true;
+    resolveResponseGate();
+  };
   await page.route("**/api/sync", async (route) => {
     signalRequestHeld();
     await responseGate;
@@ -44,6 +50,7 @@ test("an authenticated dashboard announces pending work and renders its successf
     await expect(page.getByText("Total: 12")).toBeVisible();
     await expect(page.getByRole("link", { name: "Open in Spotify" })).toHaveCount(5);
   } finally {
+    releaseResponse();
     await cleanup();
   }
 });

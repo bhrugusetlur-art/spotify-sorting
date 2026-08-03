@@ -41,12 +41,18 @@ function playlistPage(input: { items?: unknown[]; offset?: number; total?: numbe
   };
 }
 
-function playlistItemsPage(input: { items?: unknown[]; offset?: number; total?: number; next?: string | null } = {}) {
+function playlistItemsPage(input: {
+  items?: unknown[];
+  limit?: number;
+  offset?: number;
+  total?: number;
+  next?: string | null;
+} = {}) {
   const items = input.items ?? [];
   return {
     href: `${base}/playlists/playlist-1/items`,
     items,
-    limit: 50,
+    limit: input.limit ?? 50,
     offset: input.offset ?? 0,
     total: input.total ?? items.length,
     next: input.next ?? null,
@@ -301,6 +307,17 @@ describe("SpotifyWebApi pagination and mutations", () => {
     const { api } = client([response(playlistItemsPage({ items: first, offset: 0, total: 51, next: "https://api.spotify.com/v1/playlists/playlist-1/items?offset=50" })), response(playlistItemsPage({ items: [{ item: { type: "track", uri: "spotify:track:item-final" } }], offset: 50, total: 51 }))]);
 
     await expect(api.playlistItems("playlist-1")).resolves.toEqual(Array.from({ length: 51 }, (_, index) => ({ uri: index === 50 ? "spotify:track:item-final" : `spotify:track:item-${index}` })));
+  });
+
+  it("accepts a zero-limit terminal empty page while rejecting out-of-range limits", async () => {
+    const terminal = client([response(playlistItemsPage({ limit: 0 }))]);
+    await expect(terminal.api.playlistItems("playlist-1")).resolves.toEqual([]);
+    expect(terminal.fetcher).toHaveBeenCalledOnce();
+
+    for (const limit of [-1, 51]) {
+      const invalid = client([response(playlistItemsPage({ limit }))]);
+      await expect(invalid.api.playlistItems("playlist-1")).rejects.toMatchObject({ code: "SPOTIFY_RESPONSE_INVALID" });
+    }
   });
 
   it("rejects negative totals, repeated offsets, and no-progress pages", async () => {

@@ -43,7 +43,7 @@ const playlistItemSchema = z.object({
 });
 
 const pageShape = {
-  limit: z.number().int().min(1).max(50),
+  limit: z.number().int().nonnegative().max(50),
   offset: z.number().int().nonnegative(),
   total: z.number().int().nonnegative(),
   next: z.string().nullable(),
